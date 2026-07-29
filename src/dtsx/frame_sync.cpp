@@ -1,4 +1,5 @@
 #include "dtsx/frame_sync.hpp"
+#include "dtsx/uhd_frame.hpp"
 
 namespace dtsx {
 namespace {
@@ -28,6 +29,9 @@ std::optional<StreamPacking> classify_sync_word(
         return StreamPacking::ExtensionBigEndian;
     case kExtensionLittleEndian:
         return StreamPacking::ExtensionLittleEndian;
+    case kUhdSyncFrameWord:
+    case kUhdNonSyncFrameWord:
+        return StreamPacking::DtsUhd;
     default:
         return std::nullopt;
     }

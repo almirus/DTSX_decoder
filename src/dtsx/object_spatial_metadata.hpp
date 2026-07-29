@@ -35,6 +35,10 @@ struct PointSourceMetadata final {
     std::int32_t rotation_degrees = 0;
 };
 
+[[nodiscard]] bool point_source_is_renderable(
+    std::uint8_t metadata_mode,
+    const PointSourceMetadata& point) noexcept;
+
 [[nodiscard]] bool unpack_spatial_metadata(bitstream::Cursor& source,
                                            const SpatialMetadataConfig& config,
                                            std::vector<PointSourceMetadata>& points);

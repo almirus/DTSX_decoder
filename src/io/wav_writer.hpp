@@ -24,6 +24,9 @@ public:
     void write(const void* data, std::size_t size);
     void write_planar_24(
         const std::vector<std::vector<std::int32_t>>& channels);
+    void write_planar_24(
+        const std::vector<std::vector<std::int32_t>>& channels,
+        std::size_t frame_count);
     void close();
     std::uint64_t frames_written() const;
 

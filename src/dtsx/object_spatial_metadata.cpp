@@ -40,6 +40,21 @@ std::int32_t unpack_rotation(bitstream::Cursor& source) noexcept {
 
 } // namespace
 
+bool point_source_is_renderable(
+    std::uint8_t metadata_mode,
+    const PointSourceMetadata& point) noexcept {
+    // libdtsx(v2).so.c: registerObject_part_0. Standard renderer mode 0
+    // excludes a mode-0/1 source only when it is neither marked coherent
+    // nor fixed at the renderer reference distance, or when its source type
+    // is 2/3. Renderer modes that consume channel metadata accept all
+    // registered sources.
+    if (metadata_mode > 1U) {
+        return true;
+    }
+    return (point.coherent_rendering || point.distance_code == 64U)
+        && point.source_type <= 1U;
+}
+
 bool unpack_spatial_metadata(bitstream::Cursor& source,
                              const SpatialMetadataConfig& config,
                              std::vector<PointSourceMetadata>& points) {

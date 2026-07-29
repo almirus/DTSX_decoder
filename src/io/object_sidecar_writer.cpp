@@ -26,7 +26,10 @@ void ObjectSidecarWriter::write(
     std::uint32_t sample_rate,
     std::uint32_t object_id,
     std::uint32_t waveform_id,
-    const dtsx::PointSourceMetadata& point) {
+    const dtsx::PointSourceMetadata& point,
+    std::uint8_t metadata_mode,
+    bool renderable,
+    std::optional<std::uint32_t> peak_sample) {
     if (closed_) {
         throw std::runtime_error("object coordinate sidecar is closed");
     }
@@ -45,7 +48,16 @@ void ObjectSidecarWriter::write(
             << static_cast<unsigned>(point.source_type)
             << ",\"coherentRendering\":"
             << (point.coherent_rendering ? "true" : "false")
-            << ",\"snapToNearestSpeaker\":"
+            << ",\"metadataMode\":"
+            << static_cast<unsigned>(metadata_mode)
+            << ",\"renderable\":"
+            << (renderable ? "true" : "false");
+    if (peak_sample.has_value()) {
+        output_ << ",\"audioActive\":"
+                << (*peak_sample != 0U ? "true" : "false")
+                << ",\"peakSample\":" << *peak_sample;
+    }
+    output_ << ",\"snapToNearestSpeaker\":"
             << (point.snap_to_nearest_speaker ? "true" : "false")
             << ",\"gainCode\":" << static_cast<unsigned>(point.gain_code)
             << ",\"widthDeg\":" << point.width_degrees

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dtsx/frame_sync.hpp"
+#include "dtsx/uhd_frame.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -35,6 +36,7 @@ private:
     std::uint64_t frame_offset_ = 0;
     std::uint32_t expected_size_ = 0;
     std::vector<std::uint8_t> bytes_;
+    UhdFrameParserState uhd_state_;
 };
 
 } // namespace dtsx

@@ -14,9 +14,16 @@ namespace dtsx_decode {
 struct DecodedObjectAudioFrame final {
     std::uint32_t sample_rate = 0;
     std::uint32_t samples_per_channel = 0;
+    bool imax_enhanced = false;
+    std::uint32_t dtsx_extension_sync_word = 0;
+    std::uint32_t ignored_unmapped_objects = 0;
     std::vector<std::vector<std::int32_t>> waveform_channels;
     std::vector<std::uint32_t> waveform_speaker_masks;
     std::vector<std::uint32_t> waveform_source_activity_masks;
+    // True for physical supplemental channels: legacy type-69 XLL channel
+    // sets and the unreferenced private type-68 upper-layer decoder selected
+    // by type-247 renderer metadata. Type-241 object waveforms remain false.
+    std::vector<bool> waveform_is_supplemental;
     std::vector<dtsx::XllEmbeddedDownmixOutput>
         supplemental_downmix_outputs;
     std::vector<dtsx::XllHierarchicalDownmixOutput>

@@ -168,24 +168,4 @@ unsigned ProcessReader::wait() {
     return exit_code_;
 }
 
-std::string run_capture_text(const std::filesystem::path& executable,
-    const std::vector<std::wstring>& arguments,
-    bool verbose) {
-    ProcessReader process(executable, arguments, verbose);
-    std::string text;
-    std::array<char, 4096> buffer{};
-    while (true) {
-        const std::size_t size = process.read(buffer.data(), buffer.size());
-        if (size == 0) {
-            break;
-        }
-        text.append(buffer.data(), size);
-    }
-    const unsigned code = process.wait();
-    if (code != 0) {
-        throw std::runtime_error("child process failed with exit code " + std::to_string(code));
-    }
-    return text;
-}
-
 } // namespace dtsx_decode

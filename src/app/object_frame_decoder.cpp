@@ -4,6 +4,7 @@
 #include "dtsx/exss_asset.hpp"
 #include "dtsx/exss_header.hpp"
 #include "dtsx/metadata_chunk.hpp"
+#include "dtsx/object_waveform_map.hpp"
 #include "dtsx/preliminary_metadata.hpp"
 #include "dtsx/speaker_mask.hpp"
 
@@ -17,6 +18,13 @@
 
 namespace dtsx_decode {
 namespace {
+
+struct AssociatedWaveformRange final {
+    std::uint8_t association_index = 0U;
+    std::uint32_t base_channel = 0U;
+    std::uint32_t channel_count = 0U;
+    bool renderer_auxiliary_metadata_present = false;
+};
 
 void merge_sparse_gain_set(
     bool update_present,
@@ -128,6 +136,9 @@ void merge_object_update(
         state.spatial_group_present = true;
         state.spatial_group = update.spatial_group;
     }
+    state.inter_object_metadata_present =
+        update.inter_object_metadata_present;
+    state.flag_at_580 = update.flag_at_580;
     const std::uint8_t previous_mode =
         state.preamble.metadata_mode;
     state.preamble.metadata_mode = mode;
@@ -194,6 +205,8 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         decoded_asset_bases;
     std::vector<std::pair<std::uint8_t, std::uint32_t>>
         decoded_uhd_waveform_bases;
+    std::vector<AssociatedWaveformRange>
+        decoded_uhd_waveform_ranges;
     std::vector<dtsx::MetadataChunkLocation> chunks;
 
     for (std::uint32_t asset_index = 0;
@@ -482,11 +495,19 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             last_error_ = "XLL PBR decoded frame size";
             return ObjectFrameDecodeResult::Malformed;
         }
+        if (xll.extension.present) {
+            decoded.dtsx_extension_sync_word =
+                xll.extension.sync_word;
+            if (xll.extension.sync_word == 0xF14000D0U) {
+                decoded.imax_enhanced = true;
+            }
+        }
         xll_pbr.erase(
             xll_pbr.begin(),
             xll_pbr.begin()
                 + static_cast<std::ptrdiff_t>(
                     xll.common.frame_size));
+        bool renderer_auxiliary_metadata_present = false;
         const bool use_assembled_metadata =
             metadata_in_assembled_xll
             && assembled_xll_words != nullptr
@@ -522,6 +543,12 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     envelope,
                     static_cast<std::uint8_t>(
                         exss.asset_count))) {
+                for (const dtsx::MetadataElementHeader& element :
+                     envelope.elements) {
+                    if (element.chunk_id == 247U) {
+                        renderer_auxiliary_metadata_present = true;
+                    }
+                }
                 ++decoded.raw_metadata_envelopes;
                 decoded.raw_metadata_elements +=
                     static_cast<std::uint32_t>(
@@ -651,6 +678,7 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     asset.speaker_mask_present
                         ? asset.speaker_activity_mask
                         : decoded.bed_speaker_activity_mask);
+                decoded.waveform_is_supplemental.push_back(false);
             }
         }
         if (!object_audio && supplemental_object_audio) {
@@ -675,6 +703,7 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     : 0U);
                 decoded.waveform_source_activity_masks.push_back(
                     decoded.bed_speaker_activity_mask);
+                decoded.waveform_is_supplemental.push_back(true);
             }
             decoded.supplemental_downmix_outputs =
                 std::move(xll.embedded_downmix_outputs);
@@ -752,10 +781,19 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     ++offset;
                     continue;
                 }
+                const std::uint32_t waveform_base =
+                    static_cast<std::uint32_t>(
+                        decoded.waveform_channels.size());
                 decoded_uhd_waveform_bases.emplace_back(
                     association_index,
-                    static_cast<std::uint32_t>(
-                        decoded.waveform_channels.size()));
+                    waveform_base);
+                decoded_uhd_waveform_ranges.push_back(
+                    AssociatedWaveformRange{
+                        association_index,
+                        waveform_base,
+                        static_cast<std::uint32_t>(
+                            object_xll.planar_channels.size()),
+                        renderer_auxiliary_metadata_present});
                 std::uint32_t object_source_activity_mask = 0U;
                 for (const dtsx::XllChannelSetHeader& channel_set :
                      object_xll.channel_sets) {
@@ -778,6 +816,7 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     decoded.waveform_speaker_masks.push_back(0U);
                     decoded.waveform_source_activity_masks.push_back(
                         object_source_activity_mask);
+                    decoded.waveform_is_supplemental.push_back(false);
                 }
                 offset += object_xll.common.frame_size;
             }
@@ -789,35 +828,39 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         decoded.waveform_base_by_id.assign(
             256U, std::numeric_limits<std::uint32_t>::max());
     }
-    if (!decoded_asset_bases.empty()) {
-        std::sort(
-            decoded_asset_bases.begin(),
-            decoded_asset_bases.end(),
+    std::vector<std::pair<std::uint8_t, std::uint32_t>>
+        decoded_waveform_bases = decoded_asset_bases;
+    decoded_waveform_bases.insert(
+        decoded_waveform_bases.end(),
+        decoded_uhd_waveform_bases.begin(),
+        decoded_uhd_waveform_bases.end());
+    if (!decoded_waveform_bases.empty()) {
+        // libdtsx(v2).so.c:
+        // dtsPlayerObjectRenderer_MapObjectsToDecoders treats decoder IDs as
+        // ordered lower bounds. Keep UHD-associated decoders after ordinary
+        // asset decoders with the same ID so the more specific decoder wins.
+        std::stable_sort(
+            decoded_waveform_bases.begin(),
+            decoded_waveform_bases.end(),
             [](const auto& left, const auto& right) {
                 return left.first < right.first;
             });
         std::size_t decoder_index = 0U;
         for (std::uint32_t waveform_id =
-                 decoded_asset_bases.front().first;
-             waveform_id <= decoded_asset_bases.back().first
-                 && waveform_id < decoded.waveform_base_by_id.size();
+                 decoded_waveform_bases.front().first;
+             waveform_id < decoded.waveform_base_by_id.size();
              ++waveform_id) {
             while (decoder_index + 1U
-                       < decoded_asset_bases.size()
-                   && decoded_asset_bases[
-                          decoder_index + 1U]
-                              .first
+                       < decoded_waveform_bases.size()
+                   && decoded_waveform_bases[
+                           decoder_index + 1U]
+                               .first
                        <= waveform_id) {
                 ++decoder_index;
             }
             decoded.waveform_base_by_id[waveform_id] =
-                decoded_asset_bases[decoder_index].second;
+                decoded_waveform_bases[decoder_index].second;
         }
-    }
-    for (const auto& waveform :
-         decoded_uhd_waveform_bases) {
-        decoded.waveform_base_by_id[waveform.first] =
-            waveform.second;
     }
     if (!decoded_asset_bases.empty()
         || !decoded_uhd_waveform_bases.empty()) {
@@ -1027,6 +1070,73 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     decoded.presentation_gain_code =
         presentation_gain_code_;
     decoded.objects = object_state_;
+    decoded.objects.erase(
+        std::remove_if(
+            decoded.objects.begin(),
+            decoded.objects.end(),
+            [&decoded](
+                const dtsx::ObjectMetadataBlock& object) {
+                std::vector<std::uint32_t> channels;
+                if (!dtsx::object_waveform_channel_indices(
+                        object,
+                        channels,
+                        &decoded.waveform_base_by_id)
+                    || channels.empty()) {
+                    ++decoded.ignored_unmapped_objects;
+                    return true;
+                }
+                for (const std::uint32_t channel : channels) {
+                    if (channel
+                        >= decoded.waveform_channels.size()) {
+                        ++decoded.ignored_unmapped_objects;
+                        return true;
+                    }
+                }
+                return false;
+            }),
+        decoded.objects.end());
+    std::array<bool, 256U> referenced_waveform_decoders{};
+    for (const dtsx::ObjectMetadataBlock& object :
+         decoded.objects) {
+        if (object.waveform_id_available) {
+            referenced_waveform_decoders[object.waveform_id] = true;
+        }
+    }
+    for (const AssociatedWaveformRange& range :
+         decoded_uhd_waveform_ranges) {
+        // libdtsx.so dtsUHDChunks_Parse creates a decoder for every type-68
+        // associated XLL chunk. dtsPlayerObjectRenderer_MapObjectsToDecoders
+        // consumes the decoder selected by each type-241 waveform ID. The
+        // remaining four-channel decoder accompanying private type-247
+        // renderer metadata is the already-rendered upper layer.
+        if (!range.renderer_auxiliary_metadata_present
+            || referenced_waveform_decoders[
+                   range.association_index]
+            || range.channel_count != 4U
+            || range.base_channel
+                   + range.channel_count
+               > decoded.waveform_channels.size()) {
+            continue;
+        }
+        static constexpr std::array<const char*, 4U>
+            kUpperLayerOrder = {
+                "TFL", "TFR", "TBL", "TBR"};
+        for (std::uint32_t channel = 0U;
+             channel < range.channel_count;
+             ++channel) {
+            std::uint32_t speaker_mask = 0U;
+            if (!dtsx::standard_speaker_mask(
+                    kUpperLayerOrder[channel],
+                    speaker_mask)) {
+                break;
+            }
+            const std::size_t waveform =
+                range.base_channel + channel;
+            decoded.waveform_speaker_masks[waveform] =
+                speaker_mask;
+            decoded.waveform_is_supplemental[waveform] = true;
+        }
+    }
     return decoded.waveform_channels.empty()
             && decoded.bed_channels.empty()
         ? ObjectFrameDecodeResult::Ignored

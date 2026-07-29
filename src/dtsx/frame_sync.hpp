@@ -12,6 +12,7 @@ enum class StreamPacking {
     Core14BitLittleEndian,
     ExtensionBigEndian,
     ExtensionLittleEndian,
+    DtsUhd,
 };
 
 enum class SyncAlignment {

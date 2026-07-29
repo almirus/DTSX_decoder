@@ -1,6 +1,7 @@
 #include "app_version.hpp"
 #include "options.hpp"
 #include "pipeline.hpp"
+#include "progress.hpp"
 
 #include <exception>
 #include <iostream>
@@ -16,6 +17,7 @@ void configure_console() {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
+    dtsx_decode::console_style::enable_virtual_terminal();
 }
 
 } // namespace

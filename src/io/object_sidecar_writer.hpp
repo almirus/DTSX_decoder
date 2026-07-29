@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string_view>
 
 namespace dtsx_decode {
@@ -18,7 +19,10 @@ public:
                std::uint32_t sample_rate,
                std::uint32_t object_id,
                std::uint32_t waveform_id,
-               const dtsx::PointSourceMetadata& point);
+               const dtsx::PointSourceMetadata& point,
+               std::uint8_t metadata_mode,
+               bool renderable,
+               std::optional<std::uint32_t> peak_sample);
     void write_destination(std::uint64_t pts_samples,
                            std::uint32_t duration_samples,
                            std::uint32_t sample_rate,

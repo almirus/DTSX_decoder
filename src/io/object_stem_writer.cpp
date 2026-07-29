@@ -24,6 +24,19 @@ std::uint8_t sparse_gain_code(
     return 0U;
 }
 
+std::uint32_t peak_absolute_sample(
+    const std::vector<std::int32_t>& samples) noexcept {
+    std::uint32_t peak = 0U;
+    for (const std::int32_t sample : samples) {
+        const std::uint32_t magnitude = sample < 0
+            ? static_cast<std::uint32_t>(
+                  -static_cast<std::int64_t>(sample))
+            : static_cast<std::uint32_t>(sample);
+        peak = std::max(peak, magnitude);
+    }
+    return peak;
+}
+
 } // namespace
 
 ObjectStemWriter::ObjectStemWriter(
@@ -178,7 +191,11 @@ bool ObjectStemWriter::write(
                         sample_rate_,
                         object_id,
                         waveform,
-                        point);
+                        point,
+                        object.preamble.metadata_mode,
+                        dtsx::point_source_is_renderable(
+                            object.preamble.metadata_mode, point),
+                        std::nullopt);
                     wrote_coordinates = true;
                 }
                 if (!wrote_coordinates) {
@@ -215,7 +232,11 @@ bool ObjectStemWriter::write(
                         sample_rate_,
                         object_id,
                         static_cast<std::uint32_t>(waveform),
-                        point);
+                        point,
+                        object.preamble.metadata_mode,
+                        dtsx::point_source_is_renderable(
+                            object.preamble.metadata_mode, point),
+                        std::nullopt);
                     wrote_coordinates = true;
                 }
                 if (!wrote_coordinates) {
@@ -251,6 +272,9 @@ bool ObjectStemWriter::write(
             }
             stem.write_planar_24(
                 {frame.waveform_channels[channel_index]});
+            const std::uint32_t peak_sample =
+                peak_absolute_sample(
+                    frame.waveform_channels[channel_index]);
             ObjectSidecarWriter& sidecar = coordinates(key);
             bool wrote_metadata = false;
             for (const dtsx::PointSourceMetadata& point :
@@ -262,7 +286,11 @@ bool ObjectStemWriter::write(
                         sample_rate_,
                         object_id,
                         static_cast<std::uint32_t>(waveform),
-                        point);
+                        point,
+                        object.preamble.metadata_mode,
+                        dtsx::point_source_is_renderable(
+                            object.preamble.metadata_mode, point),
+                        peak_sample);
                     wrote_metadata = true;
                 }
             }

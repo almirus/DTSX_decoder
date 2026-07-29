@@ -17,6 +17,9 @@ public:
     explicit DtsFrameReader(const Options& options);
 
     [[nodiscard]] bool read(dtsx::ElementaryFrame& frame);
+    [[nodiscard]] bool container_input() const noexcept {
+        return demuxer_ != nullptr;
+    }
 
 private:
     std::unique_ptr<FfmpegDtsReader> demuxer_;

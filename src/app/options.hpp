@@ -22,6 +22,7 @@ struct Options {
     std::string layout;
     std::uint32_t channels_check = 0;
     std::uint32_t sample_rate = 0;
+    std::uint64_t duration_seconds = 0;
     unsigned audio_track = 0;
     RenderMode render_mode = RenderMode::Objects;
     bool output_explicit = false;
@@ -33,9 +34,15 @@ struct Options {
     bool help = false;
     bool version = false;
     bool probe = false;
+    bool full_probe = false;
+    bool audio_track_explicit = false;
+    bool audio_track_optional = false;
 };
 
 Options parse_options(int argc, wchar_t** argv);
+std::uint64_t duration_frame_limit(
+    const Options& options,
+    std::uint32_t sample_rate);
 void print_help();
 
 } // namespace dtsx_decode

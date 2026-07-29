@@ -56,11 +56,18 @@ std::int32_t decode_object_point_gain_q23(
     if (gain_code == 0U || gain_code > kScaleCoefficientTable.size()) {
         return 0;
     }
-    const std::int64_t object_point_gain =
-        (static_cast<std::int64_t>(object_gain_q15)
-             * kScaleCoefficientTable[gain_code - 1U]
-         + 0x4000LL)
-        >> 15U;
+    // libdtsx.so sub_5F12C performs this inner product in 32-bit ARM
+    // arithmetic and only widens the following presentation-gain product.
+    // Object gains with exponent 2/3 therefore wrap before the logical
+    // Q15 shift. Widening this multiplication produces gains up to 8.0
+    // instead of the native 0..4 range and severely clips object PCM.
+    const std::uint32_t wrapped_product =
+        static_cast<std::uint32_t>(object_gain_q15)
+            * static_cast<std::uint32_t>(
+                kScaleCoefficientTable[gain_code - 1U])
+        + 0x4000U;
+    const std::uint32_t object_point_gain =
+        wrapped_product >> 15U;
     return static_cast<std::int32_t>(
         (static_cast<std::int64_t>(presentation_gain_q23)
              * object_point_gain

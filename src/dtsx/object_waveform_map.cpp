@@ -33,6 +33,16 @@ bool map_objects_to_decoded_waveforms(
                 found = true;
             }
         }
+        if (!found
+            && object.waveform_id
+                > decoded.back().waveform_id) {
+            // libdtsx(v2).so.c:
+            // dtsPlayerObjectRenderer_MapObjectsToDecoders. Decoder IDs
+            // delimit ranges: an object above the final decoder ID is
+            // assigned to that final decoder.
+            decoder_index = decoded.size() - 1U;
+            found = true;
+        }
         if (!found) {
             mappings.clear();
             return false;

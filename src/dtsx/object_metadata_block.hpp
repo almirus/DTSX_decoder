@@ -29,6 +29,8 @@ struct ObjectMetadataBlock final {
     bool group_assignment_coherent = false;
     bool spatial_group_present = false;
     std::uint8_t spatial_group = 15;
+    bool inter_object_metadata_present = false;
+    bool flag_at_580 = false;
     ObjectSpatialHeader spatial_header;
     std::vector<PointSourceMetadata> points;
     std::vector<WaveformMetadataUpdate> updates;

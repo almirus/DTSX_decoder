@@ -45,6 +45,16 @@ bool unpack_object_metadata_bodies(
                 : static_cast<std::uint8_t>(15U);
         }
 
+        // libdtsx.so: dtsParseExSSChunks, 0xa1c38..0xa1c50.  These two
+        // per-object flags precede the spatial header for every object body.
+        // The first enables the later inter-object metadata section; the
+        // second is retained by the native object state.  Skipping them moves
+        // every coordinate and gain field two bits early.
+        block.inter_object_metadata_present =
+            source.extract_unsigned(1U) != 0U;
+        block.flag_at_580 =
+            source.extract_unsigned(1U) != 0U;
+
         const std::uint8_t mode = block.preamble.metadata_mode;
         if (mode <= 1U) {
             block.spatial_header =

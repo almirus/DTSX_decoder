@@ -49,7 +49,9 @@ bool apply_native_gain_ramp(
         gain_bits = 23U;
         base_gain = wrapping_left_shift(base_gain, gain_downshift);
         unity = wrapping_left_shift(unity, gain_downshift);
-        current = wrapping_left_shift(current, gain_downshift);
+        // dts_3d_complex_channel_renderer_t_render_apply keeps *a1,
+        // the persistent accumulator, in the promoted Q23 domain. Only
+        // the new destination gain (*a4) is promoted on every call.
         destination_gain = wrapping_left_shift(
             destination_gain, gain_downshift);
     }

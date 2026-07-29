@@ -37,8 +37,4 @@ private:
     unsigned exit_code_ = 0;
 };
 
-std::string run_capture_text(const std::filesystem::path& executable,
-    const std::vector<std::wstring>& arguments,
-    bool verbose);
-
 } // namespace dtsx_decode

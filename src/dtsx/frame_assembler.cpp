@@ -10,7 +10,7 @@
 namespace dtsx {
 namespace {
 
-constexpr std::uint32_t kNativeCaptureCapacity = 0x8004U;
+constexpr std::uint32_t kNativeCaptureCapacity = 4U * 1024U * 1024U;
 
 bool is_extension(StreamPacking packing) noexcept {
     return packing == StreamPacking::ExtensionBigEndian
@@ -20,6 +20,10 @@ bool is_extension(StreamPacking packing) noexcept {
 bool is_14bit_core(StreamPacking packing) noexcept {
     return packing == StreamPacking::Core14BitBigEndian
         || packing == StreamPacking::Core14BitLittleEndian;
+}
+
+bool is_uhd(StreamPacking packing) noexcept {
+    return packing == StreamPacking::DtsUhd;
 }
 
 } // namespace
@@ -77,7 +81,9 @@ bool FrameAssembler::header_complete() const noexcept {
     if (!packing_) {
         return false;
     }
-    const std::size_t header_size = is_extension(*packing_)
+    const std::size_t header_size = is_uhd(*packing_)
+        ? 5U
+        : is_extension(*packing_)
         ? 12U
         : (is_14bit_core(*packing_) ? 10U : 8U);
     return bytes_.size() >= header_size;
@@ -87,7 +93,18 @@ bool FrameAssembler::set_frame_size_from_header() noexcept {
     if (!packing_) {
         return false;
     }
-    if (is_extension(*packing_)) {
+    if (is_uhd(*packing_)) {
+        UhdFrameHeader header;
+        const UhdHeaderParseResult result =
+            parse_uhd_frame_header(bytes_, uhd_state_, header);
+        if (result == UhdHeaderParseResult::NeedMoreData) {
+            return true;
+        }
+        if (result != UhdHeaderParseResult::Complete) {
+            return false;
+        }
+        expected_size_ = header.frame_size;
+    } else if (is_extension(*packing_)) {
         std::array<std::uint8_t, 12> header{};
         std::copy_n(bytes_.begin(), header.size(), header.begin());
         const ExtensionFrameSizes sizes = unpack_extension_frame_sizes(header);

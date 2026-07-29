@@ -112,17 +112,6 @@ std::uint8_t sparse_gain_code(
     return 0U;
 }
 
-bool native_point_source_is_renderable(
-    const dtsx::PointSourceMetadata& point) noexcept {
-    // libdtsx.so: sub_5DB44, 0x5db44. Standard render mode
-    // registers only source types 0/1 whose per-source flag is set
-    // or whose coded distance is 64; sub_5F12C skips every other
-    // source through the registration exclusion mask.
-    return point.source_type <= 1U
-        && (point.coherent_rendering
-            || point.distance_code == 64U);
-}
-
 bool calculate_spatial_destination_gains(
     const dtsx::ObjectMetadataBlock& object,
     const LayoutPanner& panner,
@@ -134,7 +123,8 @@ bool calculate_spatial_destination_gains(
     const std::size_t destination_count =
         waveform_gains.front().size();
     for (const dtsx::PointSourceMetadata& point : object.points) {
-        if (!native_point_source_is_renderable(point)) {
+        if (!dtsx::point_source_is_renderable(
+                object.preamble.metadata_mode, point)) {
             continue;
         }
         if (point.waveform_index >= waveform_gains.size()) {
@@ -429,7 +419,6 @@ bool ObjectAudioRenderer::render(
     const std::int32_t presentation_gain_q23 =
         decode_object_presentation_gain_q23(
             frame.presentation_gain_code);
-
     for (std::size_t object_index = 0;
          object_index < frame.objects.size();
          ++object_index) {
@@ -456,7 +445,14 @@ bool ObjectAudioRenderer::render(
             object.preamble.metadata_mode;
         std::int32_t maximum_destination_gain = 0;
         std::size_t renderer_group = 0U;
-        if (metadata_mode >= 2U) {
+        // libdtsx(v2).so.c:
+        // dtsPlayerObjectRenderer_RenderObjects dispatches metadata modes
+        // 0/1 to updateRendererWith3dObjectMetadata, mode 2 to
+        // updateRendererWith3dChannelMetadata, and mode 3 to
+        // updateRendererWith1to1Channel. Renderer mode 5 intercepts a
+        // mode-0/1 object when its alternative rendering set matches the
+        // requested output layout.
+        if (metadata_mode > 1U) {
             calculate_explicit_destination_gains(
                 object,
                 layout_,
@@ -545,7 +541,6 @@ bool ObjectAudioRenderer::render(
                        object.spatial_header.gain_code)
                 << '\n';
         }
-
         bool waveform_channels_available = true;
         for (const std::uint32_t channel_index : waveform_channels) {
             if (channel_index >= frame.waveform_channels.size()

@@ -123,6 +123,14 @@ void WavWriter::write(const void* data, std::size_t size) {
 
 void WavWriter::write_planar_24(
     const std::vector<std::vector<std::int32_t>>& channels) {
+    write_planar_24(
+        channels,
+        channels.empty() ? 0U : channels.front().size());
+}
+
+void WavWriter::write_planar_24(
+    const std::vector<std::vector<std::int32_t>>& channels,
+    std::size_t frame_count) {
     if (channels.size() != layout_.channels.size()) {
         throw std::runtime_error(
             "planar PCM channel count does not match WAV layout");
@@ -130,11 +138,10 @@ void WavWriter::write_planar_24(
     if (channels.empty()) {
         return;
     }
-    const std::size_t frame_count = channels.front().size();
     for (const auto& channel : channels) {
-        if (channel.size() != frame_count) {
+        if (channel.size() < frame_count) {
             throw std::runtime_error(
-                "planar PCM channels have different frame counts");
+                "planar PCM channel is shorter than requested frame count");
         }
     }
 
