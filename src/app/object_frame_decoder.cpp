@@ -1,0 +1,1036 @@
+#include "app/object_frame_decoder.hpp"
+
+#include "bitstream/dtsx_word_buffer.hpp"
+#include "dtsx/exss_asset.hpp"
+#include "dtsx/exss_header.hpp"
+#include "dtsx/metadata_chunk.hpp"
+#include "dtsx/preliminary_metadata.hpp"
+#include "dtsx/speaker_mask.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <utility>
+
+namespace dtsx_decode {
+namespace {
+
+void merge_sparse_gain_set(
+    bool update_present,
+    std::uint32_t update_mask,
+    const std::vector<dtsx::SixBitUpdate>& update_values,
+    bool& state_present,
+    std::uint32_t& state_mask,
+    std::vector<dtsx::SixBitUpdate>& state_values) {
+    // libdtsx.so keeps the previous destination coefficients when a mode 1/2
+    // frame omits a set or omits an individual bit from that set
+    // (dtsParseExSSChunks, 0xa1440..0xa1598).  The bitstream carries only
+    // sparse replacements, not a complete coefficient vector.
+    if (!update_present) {
+        return;
+    }
+    state_present = true;
+    state_mask = update_mask;
+    for (const dtsx::SixBitUpdate& replacement : update_values) {
+        bool replaced = false;
+        for (dtsx::SixBitUpdate& value : state_values) {
+            if (value.index == replacement.index) {
+                value.value = replacement.value;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            state_values.push_back(replacement);
+        }
+    }
+}
+
+void merge_waveform_gain_updates(
+    const std::vector<dtsx::WaveformMetadataUpdate>& updates,
+    std::vector<dtsx::WaveformMetadataUpdate>& state) {
+    if (state.size() < updates.size()) {
+        state.resize(updates.size());
+    }
+    for (std::size_t waveform = 0U;
+         waveform < updates.size();
+         ++waveform) {
+        const dtsx::WaveformMetadataUpdate& update = updates[waveform];
+        dtsx::WaveformMetadataUpdate& persistent = state[waveform];
+        merge_sparse_gain_set(
+            update.first_set_present,
+            update.first_mask,
+            update.first_values,
+            persistent.first_set_present,
+            persistent.first_mask,
+            persistent.first_values);
+        merge_sparse_gain_set(
+            update.second_set_present,
+            update.second_mask,
+            update.second_values,
+            persistent.second_set_present,
+            persistent.second_mask,
+            persistent.second_values);
+    }
+}
+
+void merge_object_update(
+    dtsx::ObjectMetadataBlock update,
+    dtsx::ObjectMetadataBlock& state) {
+    const std::uint8_t mode =
+        update.preamble.metadata_mode;
+    if (mode == 0U || !state.metadata_present) {
+        state = std::move(update);
+        return;
+    }
+    if (mode == 1U) {
+        std::vector<dtsx::WaveformMetadataUpdate>
+            sparse_updates = std::move(update.updates);
+        std::vector<dtsx::WaveformMetadataUpdate>
+            persistent_updates;
+        if (state.preamble.metadata_mode == 1U
+            || state.preamble.metadata_mode == 2U) {
+            persistent_updates = std::move(state.updates);
+        }
+        state = std::move(update);
+        state.updates = std::move(persistent_updates);
+        merge_waveform_gain_updates(
+            sparse_updates, state.updates);
+        return;
+    }
+
+    // Mode 2/3 metadata blocks are sparse.  The native object state keeps
+    // identifiers, waveform mapping and grouping fields when their presence
+    // bits are clear; replacing those fields with zero here breaks dynamic
+    // objects on the first gain-only update.
+    if (update.object_id_available) {
+        state.object_id_available = true;
+        state.object_id = update.object_id;
+    }
+    if (update.waveform_id_available) {
+        state.waveform_channel_base_offset =
+            update.waveform_channel_base_offset;
+        state.waveform_id_available = true;
+        state.waveform_id = update.waveform_id;
+        state.waveform_channel_offsets =
+            std::move(update.waveform_channel_offsets);
+    }
+    if (update.group_assignment_present) {
+        state.group_assignment_present = true;
+        state.group_assignment = update.group_assignment;
+        state.group_assignment_coherent =
+            update.group_assignment_coherent;
+    }
+    if (update.spatial_group_present) {
+        state.spatial_group_present = true;
+        state.spatial_group = update.spatial_group;
+    }
+    const std::uint8_t previous_mode =
+        state.preamble.metadata_mode;
+    state.preamble.metadata_mode = mode;
+    state.preamble.waveform_count =
+        update.preamble.waveform_count;
+    state.preamble.waveform_types =
+        std::move(update.preamble.waveform_types);
+    if (mode == 1U || mode == 2U) {
+        if (previous_mode != 1U && previous_mode != 2U) {
+            state.updates.clear();
+        }
+        merge_waveform_gain_updates(update.updates, state.updates);
+    } else {
+        state.updates = std::move(update.updates);
+    }
+    state.mode_three = std::move(update.mode_three);
+    if (update.alternative_rendering_present) {
+        state.alternative_rendering_present = true;
+        state.alternative_speaker_mask_bits =
+            update.alternative_speaker_mask_bits;
+        state.alternative_render_sets =
+            std::move(update.alternative_render_sets);
+    }
+    state.body_parsed = update.body_parsed;
+}
+
+} // namespace
+
+ObjectFrameDecodeResult ObjectFrameDecoder::decode(
+    const dtsx::ElementaryFrame& elementary,
+    DecodedObjectAudioFrame& decoded,
+    const std::vector<dtsx::XllLossyBaseChannel>&
+        lossy_base_channels) {
+    decoded = {};
+    last_error_.clear();
+    if (elementary.packing != dtsx::StreamPacking::ExtensionBigEndian
+        && elementary.packing
+            != dtsx::StreamPacking::ExtensionLittleEndian) {
+        return ObjectFrameDecodeResult::Ignored;
+    }
+
+    const bool swap =
+        elementary.packing
+        == dtsx::StreamPacking::ExtensionBigEndian;
+    dtsx::bitstream::WordBuffer words(elementary.bytes, swap);
+    dtsx::bitstream::Cursor exss_source = words.cursor();
+    dtsx::ExssHeader exss;
+    if (!dtsx::validate_exss_frame(words.cursor())
+        || !dtsx::unpack_exss_header(exss_source, exss)) {
+        return ObjectFrameDecodeResult::Malformed;
+    }
+    // Native decoder state is keyed by the three-bit asset index carried in
+    // each asset header, not by the ordinal in the current ExSS asset list.
+    // Dynamic presentations may reorder or omit asset ordinals while keeping
+    // the waveform decoder identity stable across frames.
+    if (xll_decoders_.size() < 256U) {
+        xll_decoders_.resize(256U);
+        uhd_xll_decoders_.resize(256U);
+        xll_pbr_buffers_.resize(256U);
+        combined_mix_metadata_state_.resize(256U);
+        combined_mix_metadata_valid_.resize(256U, false);
+    }
+    std::vector<std::pair<std::uint8_t, std::uint32_t>>
+        decoded_asset_bases;
+    std::vector<std::pair<std::uint8_t, std::uint32_t>>
+        decoded_uhd_waveform_bases;
+    std::vector<dtsx::MetadataChunkLocation> chunks;
+
+    for (std::uint32_t asset_index = 0;
+         asset_index < exss.asset_count
+         && asset_index < exss.asset_header_bit_offsets.size();
+         ++asset_index) {
+        dtsx::bitstream::Cursor asset_header_source = words.cursor();
+        asset_header_source.fast_forward(static_cast<std::int32_t>(
+            exss.asset_header_bit_offsets[asset_index]));
+        dtsx::ExssAssetSummary asset;
+        if (!dtsx::unpack_exss_asset_summary(
+                asset_header_source,
+                exss,
+                asset,
+                asset_index)) {
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        if ((asset.coding_components & (1U << 9U)) == 0U) {
+            continue;
+        }
+
+        std::uint32_t asset_payload_offset = exss.header_size;
+        for (std::uint32_t previous = 0;
+             previous < asset_index;
+             ++previous) {
+            asset_payload_offset += exss.asset_sizes[previous];
+        }
+        dtsx::bitstream::Cursor xll_source = words.cursor();
+        xll_source.fast_forward(static_cast<std::int32_t>(
+            8U * (asset_payload_offset
+                + asset.component_byte_offsets[9U])));
+        xll_source = xll_source.limited(
+            8U * asset.component_size_bytes[9U]);
+        std::vector<std::uint8_t> xll_packet(
+            asset.component_size_bytes[9U]);
+        dtsx::bitstream::Cursor xll_packet_source = xll_source;
+        for (std::uint8_t& byte : xll_packet) {
+            byte = static_cast<std::uint8_t>(
+                xll_packet_source.extract_unsigned(8U));
+        }
+        if (!xll_packet_source.valid()) {
+            last_error_ = "XLL component bounds";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        std::vector<std::uint8_t>& xll_pbr =
+            xll_pbr_buffers_[asset.asset_index];
+        const std::size_t previous_pbr_size = xll_pbr.size();
+        const std::size_t maximum_pbr_size =
+            asset.xll_smoothing_buffer_kbytes != 0U
+            ? static_cast<std::size_t>(
+                  asset.xll_smoothing_buffer_kbytes)
+                  << 10U
+            : 256U << 10U;
+        if (xll_packet.size()
+            > maximum_pbr_size - (std::min)(
+                  maximum_pbr_size, xll_pbr.size())) {
+            xll_pbr.clear();
+            last_error_ = "XLL PBR smoothing buffer overflow";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        xll_pbr.insert(
+            xll_pbr.end(),
+            xll_packet.begin(),
+            xll_packet.end());
+        std::shared_ptr<dtsx::bitstream::WordBuffer>
+            assembled_xll_words;
+        std::uint32_t metadata_component_offset =
+            asset.xll_metadata_offset;
+        bool metadata_in_assembled_xll = false;
+        if (previous_pbr_size != 0U
+            || asset.xll_sync_offset != 0U) {
+            assembled_xll_words =
+                std::make_shared<dtsx::bitstream::WordBuffer>(
+                    xll_pbr, false);
+            dtsx::bitstream::Cursor common_source =
+                assembled_xll_words->cursor();
+            dtsx::XllCommonHeader assembled_common;
+            if (dtsx::unpack_xll_common_header(
+                    common_source, assembled_common)
+                && assembled_common.frame_size <= xll_pbr.size()) {
+                constexpr std::array<std::uint8_t, 4U>
+                    kCombinedMetadataSync = {
+                        0x02U, 0x00U, 0x08U, 0x50U};
+                const auto metadata_sync = std::search(
+                    xll_pbr.begin()
+                        + static_cast<std::ptrdiff_t>(
+                            assembled_common.header_size),
+                    xll_pbr.begin()
+                        + static_cast<std::ptrdiff_t>(
+                            assembled_common.frame_size),
+                    kCombinedMetadataSync.begin(),
+                    kCombinedMetadataSync.end());
+                if (metadata_sync
+                    != xll_pbr.begin()
+                           + static_cast<std::ptrdiff_t>(
+                               assembled_common.frame_size)) {
+                    metadata_component_offset =
+                        static_cast<std::uint32_t>(
+                            std::distance(
+                                xll_pbr.begin(), metadata_sync));
+                    metadata_in_assembled_xll = true;
+                }
+            }
+        }
+        std::vector<dtsx::XllSupplementalChannelSet>
+            supplemental_channel_sets;
+        dtsx::CombinedMixMetadata combined_mix;
+        bool combined_mix_available = false;
+        if (asset.xll_metadata_present
+            && asset.xll_object_metadata_present
+            && !asset.xll_metadata_chunk_sizes.empty()
+            && !asset.xll_associated_chunk_types.empty()) {
+            std::uint32_t raw_metadata_bytes = 2U;
+            for (const std::uint8_t payload_size :
+                 asset.xll_metadata_chunk_sizes) {
+                raw_metadata_bytes +=
+                    static_cast<std::uint32_t>(
+                        payload_size) + 2U;
+            }
+            std::uint32_t associated_offset =
+                metadata_component_offset
+                + raw_metadata_bytes;
+            dtsx::bitstream::Cursor combined_source =
+                metadata_in_assembled_xll
+                ? assembled_xll_words->cursor()
+                : words.cursor();
+            if (metadata_in_assembled_xll) {
+                combined_source.fast_forward(
+                    static_cast<std::int32_t>(
+                        8U * metadata_component_offset));
+                combined_source = combined_source.limited(
+                    static_cast<std::uint32_t>(
+                        8U * (xll_pbr.size()
+                              - metadata_component_offset)));
+            } else {
+                combined_source.fast_forward(
+                    static_cast<std::int32_t>(
+                        8U
+                        * (asset_payload_offset
+                           + asset.component_byte_offsets[9U]
+                           + asset.xll_metadata_offset)));
+                combined_source = combined_source.limited(
+                    8U
+                    * (asset.component_size_bytes[9U]
+                       - asset.xll_metadata_offset));
+            }
+            combined_mix_available =
+                dtsx::unpack_combined_mix_metadata(
+                    combined_source,
+                    static_cast<std::uint8_t>(
+                        exss.asset_count),
+                    asset.speaker_activity_mask,
+                    combined_mix);
+            if (combined_mix_available) {
+                combined_mix_metadata_state_[
+                    asset.asset_index] = combined_mix;
+                combined_mix_metadata_valid_[
+                    asset.asset_index] = true;
+            } else if (combined_mix_metadata_valid_[
+                           asset.asset_index]) {
+                combined_mix =
+                    combined_mix_metadata_state_[
+                        asset.asset_index];
+                combined_mix_available = true;
+            }
+            for (std::size_t associated_index = 0U;
+                 associated_index
+                     < asset.xll_associated_chunk_types.size();
+                 ++associated_index) {
+                if (asset.xll_associated_chunk_types[
+                        associated_index]
+                    == 69U) {
+                    // libdtsx.so: sub_C48C0 ->
+                    // dtsGetNumChSetsAudioChunk(69) ->
+                    // dtsx_decodeTryXLLChSetHeader.  The legacy type-69
+                    // audio-chunk navigation occupies 17 bytes before the
+                    // independent XLL channel-set header.
+                    constexpr std::uint32_t
+                        kLegacyXllAudioChunkPrefixBytes = 17U;
+                    const std::uint32_t channel_set_offset =
+                        associated_offset
+                        + kLegacyXllAudioChunkPrefixBytes;
+                    const std::size_t metadata_buffer_size =
+                        metadata_in_assembled_xll
+                        ? xll_pbr.size()
+                        : asset.component_size_bytes[9U];
+                    if (channel_set_offset
+                        < metadata_buffer_size) {
+                        dtsx::bitstream::Cursor
+                            supplemental_source =
+                                metadata_in_assembled_xll
+                                ? assembled_xll_words->cursor()
+                                : words.cursor();
+                        const std::uint32_t absolute_offset =
+                            metadata_in_assembled_xll
+                            ? channel_set_offset
+                            : asset_payload_offset
+                                  + asset.component_byte_offsets[9U]
+                                  + channel_set_offset;
+                        supplemental_source.fast_forward(
+                            static_cast<std::int32_t>(
+                                8U * absolute_offset));
+                        supplemental_source =
+                            supplemental_source.limited(
+                                static_cast<std::uint32_t>(
+                                    8U
+                                    * (metadata_buffer_size
+                                       - channel_set_offset)));
+                        if (!combined_mix_available) {
+                            last_error_ =
+                                "combined type-2 XLL metadata";
+                            return ObjectFrameDecodeResult::Malformed;
+                        }
+                        dtsx::XllSupplementalChannelSet
+                            supplemental{supplemental_source};
+                        supplemental.speaker_activity_mask =
+                            combined_mix
+                                .added_speaker_activity_mask;
+                        supplemental.reference_speaker_masks =
+                            combined_mix.reference_speaker_masks;
+                        supplemental
+                            .lossy_reference_speaker_masks =
+                                combined_mix
+                                    .lossy_reference_speaker_masks;
+                        supplemental.downmix_coefficients.reserve(
+                            combined_mix
+                                .downmix_coefficient_codes.size());
+                        for (const std::uint8_t code :
+                             combined_mix
+                                 .downmix_coefficient_codes) {
+                            supplemental.downmix_coefficients
+                                .push_back(
+                                    dtsx::
+                                        xll_metadata_downmix_coefficient(
+                                            code));
+                        }
+                        supplemental_channel_sets.push_back(
+                            std::move(supplemental));
+                    }
+                }
+                if (associated_index
+                    < asset.xll_associated_chunk_extents.size()) {
+                    associated_offset +=
+                        asset.xll_associated_chunk_extents[
+                            associated_index];
+                }
+            }
+        }
+        dtsx::XllDecodedFrame xll;
+        auto decode_pbr =
+            [&]() {
+                dtsx::bitstream::WordBuffer pbr_words(
+                    xll_pbr, false);
+                return xll_decoders_[asset.asset_index]
+                    .decode_msb_frame(
+                        pbr_words.cursor(),
+                        xll,
+                        asset.one_to_one_mapping,
+                        supplemental_channel_sets,
+                        lossy_base_channels);
+            };
+        bool xll_decoded =
+            asset.asset_index < xll_decoders_.size()
+            && decode_pbr();
+        if (!xll_decoded
+            && previous_pbr_size == 0U
+            && asset.xll_sync_present
+            && asset.xll_sync_offset < xll_packet.size()) {
+            xll_pbr.erase(
+                xll_pbr.begin(),
+                xll_pbr.begin()
+                    + static_cast<std::ptrdiff_t>(
+                        asset.xll_sync_offset));
+            xll_decoded = decode_pbr();
+        }
+        if (!xll_decoded) {
+            last_error_ = asset.asset_index
+                    < xll_decoders_.size()
+                ? xll_decoders_[asset.asset_index].last_error()
+                : "XLL decoder index";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        if (xll.common.frame_size == 0U
+            || xll.common.frame_size > xll_pbr.size()) {
+            xll_pbr.clear();
+            last_error_ = "XLL PBR decoded frame size";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        xll_pbr.erase(
+            xll_pbr.begin(),
+            xll_pbr.begin()
+                + static_cast<std::ptrdiff_t>(
+                    xll.common.frame_size));
+        const bool use_assembled_metadata =
+            metadata_in_assembled_xll
+            && assembled_xll_words != nullptr
+            && metadata_component_offset < xll.common.frame_size;
+        if (asset.xll_metadata_present
+            && !asset.xll_metadata_chunk_sizes.empty()
+            && (use_assembled_metadata
+                || asset.xll_metadata_offset
+                    < asset.component_size_bytes[9U])) {
+            const std::uint32_t metadata_byte_offset =
+                use_assembled_metadata
+                ? metadata_component_offset
+                : asset_payload_offset
+                      + asset.component_byte_offsets[9U]
+                      + asset.xll_metadata_offset;
+            dtsx::bitstream::Cursor metadata_source =
+                use_assembled_metadata
+                ? assembled_xll_words->cursor()
+                : words.cursor();
+            metadata_source.fast_forward(static_cast<std::int32_t>(
+                8U * metadata_byte_offset));
+            metadata_source = metadata_source.limited(
+                8U
+                * (use_assembled_metadata
+                       ? xll.common.frame_size
+                             - metadata_component_offset
+                       : asset.component_size_bytes[9U]
+                             - asset.xll_metadata_offset));
+            dtsx::MetadataChunkEnvelope envelope;
+            if (dtsx::unpack_metadata_chunk_payload(
+                    metadata_source,
+                    asset.xll_metadata_chunk_sizes,
+                    envelope,
+                    static_cast<std::uint8_t>(
+                        exss.asset_count))) {
+                ++decoded.raw_metadata_envelopes;
+                decoded.raw_metadata_elements +=
+                    static_cast<std::uint32_t>(
+                        envelope.elements.size());
+                if (!envelope.crc_valid) {
+                    ++decoded.raw_metadata_crc_failures;
+                }
+                chunks.push_back(dtsx::MetadataChunkLocation{
+                    metadata_byte_offset,
+                    0U,
+                    std::move(envelope),
+                    use_assembled_metadata
+                        ? assembled_xll_words
+                        : nullptr});
+            }
+        }
+        decoded.sample_rate =
+            decoded.sample_rate == 0U
+            ? xll.sample_rate
+            : decoded.sample_rate;
+        if (decoded.sample_rate != xll.sample_rate
+            || (decoded.samples_per_channel != 0U
+                && decoded.samples_per_channel
+                    != xll.samples_per_channel)) {
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        decoded.samples_per_channel = xll.samples_per_channel;
+        const bool object_audio = asset.object_audio_type == 1U;
+        const std::size_t main_channel_count =
+            (std::min<std::size_t>)(
+                xll.main_planar_channel_count,
+                xll.planar_channels.size());
+        const bool supplemental_object_audio =
+            main_channel_count < xll.planar_channels.size();
+        if (object_audio) {
+            decoded_asset_bases.emplace_back(
+                asset.asset_index,
+                static_cast<std::uint32_t>(
+                    decoded.waveform_channels.size()));
+        }
+        if (!object_audio) {
+            decoded.bed_downmix_outputs =
+                std::move(xll.hierarchical_downmix_outputs);
+            // Native XLL bed assets carry the physical speaker activity mask
+            // in the asset header.  Some streams omit it there and carry the
+            // equivalent physical mask in the XLL channel-set header.
+            std::uint32_t bed_mask = asset.speaker_mask_present
+                ? asset.speaker_activity_mask
+                : 0U;
+            if (bed_mask == 0U) {
+                for (const dtsx::XllChannelSetHeader& channel_set :
+                     xll.channel_sets) {
+                    if (channel_set.channel_mask_enabled) {
+                        bed_mask |= dtsx::speaker_mask_to_activity_mask(
+                            channel_set.speaker_channel_mask);
+                    }
+                }
+            }
+            if (bed_mask != 0U) {
+                decoded.bed_speaker_activity_mask = bed_mask;
+                std::vector<std::uint32_t> decoded_speakers;
+                decoded_speakers.reserve(main_channel_count);
+                std::size_t mapped_channel_sets = 0U;
+                for (const dtsx::XllChannelSetHeader& channel_set :
+                     xll.channel_sets) {
+                    if (mapped_channel_sets
+                            + channel_set.probe.channel_count
+                        > main_channel_count) {
+                        break;
+                    }
+                    mapped_channel_sets +=
+                        channel_set.probe.channel_count;
+                    if (!channel_set.channel_mask_enabled) {
+                        decoded_speakers.clear();
+                        break;
+                    }
+                    for (std::uint32_t bit = 0U;
+                         bit < 32U;
+                         ++bit) {
+                        const std::uint32_t speaker = 1U << bit;
+                        if ((channel_set.speaker_channel_mask
+                             & speaker)
+                            != 0U) {
+                            decoded_speakers.push_back(speaker);
+                        }
+                    }
+                }
+                const std::vector<std::uint32_t> canonical_speakers =
+                    dtsx::expand_speaker_activity_mask(bed_mask);
+                if (decoded_speakers.size()
+                        == main_channel_count
+                    && canonical_speakers.size()
+                        == main_channel_count) {
+                    for (std::uint32_t speaker :
+                         canonical_speakers) {
+                        const auto source = std::find(
+                            decoded_speakers.begin(),
+                            decoded_speakers.end(),
+                            speaker);
+                        if (source == decoded_speakers.end()) {
+                            decoded.bed_channels.clear();
+                            break;
+                        }
+                        decoded.bed_channels.push_back(
+                            xll.planar_channels[
+                                static_cast<std::size_t>(
+                                    std::distance(
+                                        decoded_speakers.begin(),
+                                        source))]);
+                    }
+                }
+                if (decoded.bed_channels.empty()) {
+                    for (std::size_t channel = 0U;
+                         channel < main_channel_count;
+                         ++channel) {
+                        decoded.bed_channels.push_back(
+                            xll.planar_channels[channel]);
+                    }
+                }
+            }
+        } else {
+            for (auto& channel : xll.planar_channels) {
+                decoded.waveform_channels.push_back(
+                    std::move(channel));
+                decoded.waveform_speaker_masks.push_back(0U);
+                decoded.waveform_source_activity_masks.push_back(
+                    asset.speaker_mask_present
+                        ? asset.speaker_activity_mask
+                        : decoded.bed_speaker_activity_mask);
+            }
+        }
+        if (!object_audio && supplemental_object_audio) {
+            decoded_asset_bases.emplace_back(
+                asset.asset_index,
+                static_cast<std::uint32_t>(
+                    decoded.waveform_channels.size()));
+            for (std::size_t channel = main_channel_count;
+                 channel < xll.planar_channels.size();
+                 ++channel) {
+                decoded.waveform_channels.push_back(
+                    std::move(xll.planar_channels[channel]));
+                const std::size_t supplemental_channel =
+                    channel - main_channel_count;
+                decoded.waveform_speaker_masks.push_back(
+                    combined_mix_available
+                        && supplemental_channel
+                               < combined_mix
+                                     .added_speaker_masks.size()
+                    ? combined_mix.added_speaker_masks[
+                          supplemental_channel]
+                    : 0U);
+                decoded.waveform_source_activity_masks.push_back(
+                    decoded.bed_speaker_activity_mask);
+            }
+            decoded.supplemental_downmix_outputs =
+                std::move(xll.embedded_downmix_outputs);
+        }
+
+        // libdtsx.so: dtsUHDChunks_Parse selects associated chunk types 65
+        // and 68, then DTS_ObjectDecoder_StartNewFrame routes type 68 into
+        // DTSHD_CodingCompXLL_ParseFrame. Those private frames retain their
+        // ordinary XLL sync words inside the XLL extension storage.
+        if (asset.xll_object_metadata_present
+            && asset.xll_metadata_offset < xll_packet.size()) {
+            dtsx::bitstream::WordBuffer uhd_words(
+                xll_packet, false);
+            for (std::size_t offset = asset.xll_metadata_offset;
+                 offset + 4U <= xll_packet.size();) {
+                const std::uint32_t sync =
+                    (static_cast<std::uint32_t>(
+                         xll_packet[offset])
+                     << 24U)
+                    | (static_cast<std::uint32_t>(
+                           xll_packet[offset + 1U])
+                       << 16U)
+                    | (static_cast<std::uint32_t>(
+                           xll_packet[offset + 2U])
+                       << 8U)
+                    | xll_packet[offset + 3U];
+                if (sync != dtsx::kXllSyncLegacy
+                    && sync != dtsx::kXllSync) {
+                    ++offset;
+                    continue;
+                }
+                static constexpr std::array<std::uint8_t, 4U>
+                    kAssociationTypeBits = {0U, 1U, 2U, 2U};
+                const std::uint8_t association_type_bits =
+                    exss.asset_count >= 1U
+                            && exss.asset_count <= 4U
+                        ? kAssociationTypeBits[
+                              exss.asset_count - 1U]
+                        : 2U;
+                const std::uint8_t association_index_bits =
+                    static_cast<std::uint8_t>(
+                        8U - association_type_bits);
+                const std::uint8_t association_index =
+                    offset == 0U
+                    ? 0U
+                    : static_cast<std::uint8_t>(
+                          xll_packet[offset - 1U]
+                          & ((1U << association_index_bits)
+                             - 1U));
+                auto& object_decoders =
+                    uhd_xll_decoders_[asset.asset_index];
+                if (object_decoders.size()
+                    <= association_index) {
+                    object_decoders.resize(
+                        static_cast<std::size_t>(
+                            association_index) + 1U);
+                }
+                dtsx::bitstream::Cursor object_source =
+                    uhd_words.cursor();
+                object_source.fast_forward(
+                    static_cast<std::int32_t>(8U * offset));
+                dtsx::XllDecodedFrame object_xll;
+                if (!object_decoders[association_index]
+                         .decode_msb_frame(
+                             object_source,
+                             object_xll,
+                             false)
+                    || object_xll.common.frame_size == 0U
+                    || object_xll.common.frame_size
+                           > xll_packet.size() - offset
+                    || object_xll.samples_per_channel
+                           != decoded.samples_per_channel
+                    || object_xll.sample_rate
+                           != decoded.sample_rate) {
+                    ++offset;
+                    continue;
+                }
+                decoded_uhd_waveform_bases.emplace_back(
+                    association_index,
+                    static_cast<std::uint32_t>(
+                        decoded.waveform_channels.size()));
+                std::uint32_t object_source_activity_mask = 0U;
+                for (const dtsx::XllChannelSetHeader& channel_set :
+                     object_xll.channel_sets) {
+                    if (channel_set.channel_mask_enabled) {
+                        object_source_activity_mask |=
+                            dtsx::speaker_mask_to_activity_mask(
+                                channel_set.speaker_channel_mask);
+                    }
+                }
+                if (object_source_activity_mask == 0U) {
+                    object_source_activity_mask =
+                        asset.speaker_mask_present
+                        ? asset.speaker_activity_mask
+                        : decoded.bed_speaker_activity_mask;
+                }
+                for (auto& channel :
+                     object_xll.planar_channels) {
+                    decoded.waveform_channels.push_back(
+                        std::move(channel));
+                    decoded.waveform_speaker_masks.push_back(0U);
+                    decoded.waveform_source_activity_masks.push_back(
+                        object_source_activity_mask);
+                }
+                offset += object_xll.common.frame_size;
+            }
+        }
+
+    }
+    if (!decoded_asset_bases.empty()
+        || !decoded_uhd_waveform_bases.empty()) {
+        decoded.waveform_base_by_id.assign(
+            256U, std::numeric_limits<std::uint32_t>::max());
+    }
+    if (!decoded_asset_bases.empty()) {
+        std::sort(
+            decoded_asset_bases.begin(),
+            decoded_asset_bases.end(),
+            [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            });
+        std::size_t decoder_index = 0U;
+        for (std::uint32_t waveform_id =
+                 decoded_asset_bases.front().first;
+             waveform_id <= decoded_asset_bases.back().first
+                 && waveform_id < decoded.waveform_base_by_id.size();
+             ++waveform_id) {
+            while (decoder_index + 1U
+                       < decoded_asset_bases.size()
+                   && decoded_asset_bases[
+                          decoder_index + 1U]
+                              .first
+                       <= waveform_id) {
+                ++decoder_index;
+            }
+            decoded.waveform_base_by_id[waveform_id] =
+                decoded_asset_bases[decoder_index].second;
+        }
+    }
+    for (const auto& waveform :
+         decoded_uhd_waveform_bases) {
+        decoded.waveform_base_by_id[waveform.first] =
+            waveform.second;
+    }
+    if (!decoded_asset_bases.empty()
+        || !decoded_uhd_waveform_bases.empty()) {
+        waveform_base_by_id_state_ =
+            decoded.waveform_base_by_id;
+    } else {
+        // Native ExSS object state keeps decoder pointers across frames where
+        // static fields or the XLL asset payload are omitted.
+        decoded.waveform_base_by_id = waveform_base_by_id_state_;
+    }
+
+    bool have_current_object_presentation = false;
+    std::size_t current_object_count = 0U;
+    bool current_object_ids_complete = false;
+    std::vector<std::uint32_t> current_object_ids;
+    std::vector<dtsx::MetadataChunkLocation> scanned_chunks =
+        dtsx::scan_metadata_chunks(
+            words.cursor(),
+            static_cast<std::uint32_t>(elementary.bytes.size()),
+            static_cast<std::uint8_t>(exss.asset_count));
+    chunks.insert(
+        chunks.end(),
+        std::make_move_iterator(scanned_chunks.begin()),
+        std::make_move_iterator(scanned_chunks.end()));
+    for (const dtsx::MetadataChunkLocation& chunk : chunks) {
+        // dtsCheckValidMetaDataChunk keeps CRC validity as state, while the
+        // native metadata parser rejects the chunk before applying objects
+        // when that CRC is bad.
+        if (!chunk.envelope.crc_valid) {
+            continue;
+        }
+        for (const dtsx::MetadataElementHeader& element :
+             chunk.envelope.elements) {
+            if (element.chunk_id != 241U || !element.primary) {
+                continue;
+            }
+            const std::uint32_t element_byte_offset =
+                chunk.byte_offset
+                + chunk.element_prefix_bytes
+                + element.byte_offset + 2U;
+            // libdtsx.so dtsParseExSSChunks clones the containing ExSS
+            // bitstream cursor kept by sub_C5B9C.  It does not restrict the
+            // detailed type-241 parser to the preliminary element byte
+            // count; object bodies can continue through following chunk
+            // storage before the native end-position checks.
+            dtsx::bitstream::Cursor metadata_source =
+                chunk.source_words != nullptr
+                ? chunk.source_words->cursor()
+                : words.cursor();
+            metadata_source.fast_forward(static_cast<std::int32_t>(
+                8U * element_byte_offset));
+
+            dtsx::PreliminaryMetadataHeader preliminary;
+            preliminary.chunk_id = element.chunk_id;
+            preliminary.raw_flags = element.flags;
+            preliminary.primary = element.primary;
+            preliminary.short_form = element.short_form;
+            preliminary.alternate_association =
+                element.alternate_association;
+            preliminary.association_type =
+                element.association_type;
+            preliminary.association_index =
+                element.association_index;
+            dtsx::AudioPresentationMetadata presentation;
+            if (!dtsx::unpack_audio_presentation_metadata(
+                    metadata_source,
+                    preliminary,
+                    preliminary.short_form,
+                    presentation)) {
+                continue;
+            }
+            ++decoded.metadata_presentation_headers;
+            std::vector<bool> waveform_decoder_available(
+                presentation.objects.size(), false);
+            const auto decoder_available_for_waveform =
+                [&decoded](bool available, std::uint8_t waveform_id) {
+                    return available
+                        && waveform_id < decoded.waveform_base_by_id.size()
+                        && decoded.waveform_base_by_id[waveform_id]
+                            != std::numeric_limits<
+                                std::uint32_t>::max();
+                };
+            for (std::size_t object_index = 0U;
+                 object_index < presentation.objects.size();
+                 ++object_index) {
+                const dtsx::ObjectMetadataBlock& object =
+                    presentation.objects[object_index];
+                waveform_decoder_available[object_index] =
+                    decoder_available_for_waveform(
+                        object.waveform_id_available,
+                        object.waveform_id);
+                if (!waveform_decoder_available[object_index]
+                    && !object.metadata_present) {
+                    // libdtsx.so retains object+0x800 when a subsequent
+                    // metadata block omits the object body; the parser still
+                    // consumes its alternative-rendering presence bit.
+                    std::size_t previous_index = object_state_.size();
+                    if (object.object_id_available) {
+                        for (std::size_t candidate = 0U;
+                             candidate < object_state_.size();
+                             ++candidate) {
+                            if (object_state_[candidate].object_id_available
+                                && object_state_[candidate].object_id
+                                    == object.object_id) {
+                                previous_index = candidate;
+                                break;
+                            }
+                        }
+                    } else if (object_index < object_state_.size()) {
+                        previous_index = object_index;
+                    }
+                    if (previous_index < object_state_.size()) {
+                        const dtsx::ObjectMetadataBlock& previous =
+                            object_state_[previous_index];
+                        waveform_decoder_available[object_index] =
+                            decoder_available_for_waveform(
+                                previous.waveform_id_available,
+                                previous.waveform_id);
+                    }
+                }
+            }
+            if (!dtsx::unpack_audio_presentation_object_bodies(
+                metadata_source,
+                presentation,
+                &waveform_decoder_available)) {
+                ++decoded.metadata_body_parse_failures;
+                continue;
+            }
+            if (presentation.speaker_count != 0U) {
+                metadata_speaker_activity_mask_ =
+                    presentation.speaker_activity_mask;
+            }
+            presentation_gain_code_ =
+                presentation.render_gain_code;
+            if (presentation.metadata_present) {
+                have_current_object_presentation = true;
+                current_object_count = presentation.objects.size();
+                current_object_ids.clear();
+                current_object_ids_complete = true;
+                for (const dtsx::ObjectMetadataBlock& object :
+                     presentation.objects) {
+                    if (!object.object_id_available) {
+                        current_object_ids_complete = false;
+                        break;
+                    }
+                    current_object_ids.push_back(object.object_id);
+                }
+            }
+            for (std::size_t object_index = 0U;
+                 object_index < presentation.objects.size();
+                 ++object_index) {
+                dtsx::ObjectMetadataBlock& update =
+                    presentation.objects[object_index];
+                if (!update.metadata_present) {
+                    continue;
+                }
+                std::size_t state_index = object_state_.size();
+                if (update.object_id_available) {
+                    for (std::size_t candidate = 0U;
+                         candidate < object_state_.size();
+                         ++candidate) {
+                        if (object_state_[candidate]
+                                .object_id_available
+                            && object_state_[candidate].object_id
+                                == update.object_id) {
+                            state_index = candidate;
+                            break;
+                        }
+                    }
+                } else if (object_index < object_state_.size()) {
+                    state_index = object_index;
+                }
+                if (state_index == object_state_.size()) {
+                    object_state_.emplace_back();
+                }
+                merge_object_update(
+                    std::move(update),
+                    object_state_[state_index]);
+            }
+        }
+    }
+    if (have_current_object_presentation
+        && current_object_count < object_state_.size()) {
+        if (current_object_ids_complete) {
+            object_state_.erase(
+                std::remove_if(
+                    object_state_.begin(),
+                    object_state_.end(),
+                    [&current_object_ids](
+                        const dtsx::ObjectMetadataBlock& object) {
+                        if (!object.object_id_available) {
+                            return true;
+                        }
+                        return std::find(
+                                   current_object_ids.begin(),
+                                   current_object_ids.end(),
+                                   object.object_id)
+                            == current_object_ids.end();
+                    }),
+                object_state_.end());
+        } else {
+            object_state_.resize(current_object_count);
+        }
+    }
+    decoded.metadata_speaker_activity_mask =
+        metadata_speaker_activity_mask_;
+    decoded.presentation_gain_code =
+        presentation_gain_code_;
+    decoded.objects = object_state_;
+    return decoded.waveform_channels.empty()
+            && decoded.bed_channels.empty()
+        ? ObjectFrameDecodeResult::Ignored
+        : ObjectFrameDecodeResult::Decoded;
+}
+
+} // namespace dtsx_decode
