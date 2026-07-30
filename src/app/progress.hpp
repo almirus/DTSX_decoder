@@ -32,6 +32,7 @@ inline constexpr const char* bright_cyan = "\033[96m";
 inline constexpr const char* green = "\033[32m";
 inline constexpr const char* bright_green = "\033[92m";
 inline constexpr const char* bright_yellow = "\033[93m";
+inline constexpr const char* bright_red = "\033[91m";
 inline constexpr const char* white = "\033[97m";
 inline constexpr const char* bright_magenta = "\033[95m";
 inline constexpr const char* hide_cursor = "\033[?25l";

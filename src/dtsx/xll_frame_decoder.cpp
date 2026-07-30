@@ -1642,12 +1642,12 @@ bool XllFrameDecoder::decode_msb_frame(
                         "hierarchical downmix band count";
                     return false;
                 }
-                const std::uint8_t storage_bit_depth =
-                    prior.probe.storage_bit_depth;
+                const std::uint8_t pcm_bit_depth =
+                    prior.probe.bit_depth;
                 const std::uint8_t output_shift =
-                    storage_bit_depth < 24U
+                    pcm_bit_depth < 24U
                     ? static_cast<std::uint8_t>(
-                          24U - storage_bit_depth)
+                          24U - pcm_bit_depth)
                     : 0U;
                 for (auto& channel : set_channels) {
                     if (output_shift != 0U) {
@@ -1715,13 +1715,13 @@ bool XllFrameDecoder::decode_msb_frame(
             return false;
         }
         for (auto& channel : set_channels) {
-            const std::uint8_t storage_bit_depth =
+            const std::uint8_t pcm_bit_depth =
                 frame.channel_sets[channel_set]
-                    .probe.storage_bit_depth;
+                    .probe.bit_depth;
             const std::uint8_t output_shift =
-                storage_bit_depth < 24U
+                pcm_bit_depth < 24U
                 ? static_cast<std::uint8_t>(
-                      24U - storage_bit_depth)
+                      24U - pcm_bit_depth)
                 : 0U;
             if (output_shift != 0U) {
                 for (std::int32_t& sample : channel) {

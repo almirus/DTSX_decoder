@@ -710,6 +710,22 @@ void print_probe_highlighted_field(
     std::cout << '\n';
 }
 
+template <typename Value>
+void print_probe_warning_field(
+    std::string_view name,
+    const Value& value,
+    bool color) {
+    std::cout << "  " << std::left << std::setw(30)
+              << std::setfill(' ') << name << ": ";
+    console_style::paint(
+        std::cout, color, console_style::bold);
+    console_style::paint(
+        std::cout, color, console_style::bright_red);
+    std::cout << value;
+    console_style::reset(std::cout, color);
+    std::cout << '\n';
+}
+
 std::uint32_t layout_speaker_activity_mask(
     const ChannelLayout& layout) noexcept {
     std::uint32_t physical_mask = 0U;
@@ -832,6 +848,8 @@ void run_internal_probe(
     std::uint64_t xll_hierarchical_channel_set_count = 0U;
     std::uint64_t xll_downmix_channel_set_count = 0U;
     std::uint32_t maximum_xll_channel_sets_per_asset = 0U;
+    std::uint32_t detected_xll_pcm_bits = 0U;
+    std::uint32_t detected_xll_storage_bits = 0U;
     std::uint64_t malformed_object_frame_count = 0U;
     std::uint64_t xll_pbr_fallback_frame_count = 0U;
     std::uint32_t maximum_supplemental_xll_channels = 0U;
@@ -839,6 +857,7 @@ void run_internal_probe(
     std::uint64_t metadata_body_parse_failure_count = 0U;
     std::uint64_t raw_metadata_envelope_count = 0U;
     std::uint64_t raw_metadata_crc_failure_count = 0U;
+    bool nonempty_xll_metadata_chunk_seen = false;
     std::size_t maximum_object_count = 0U;
     std::set<std::uint32_t> object_ids;
     std::uint32_t detected_frame_duration = 0U;
@@ -961,6 +980,14 @@ void run_internal_probe(
                     if (asset.xll_metadata_present
                         && !asset.xll_metadata_chunk_sizes.empty()) {
                         ++metadata_chunk_count;
+                        nonempty_xll_metadata_chunk_seen =
+                            nonempty_xll_metadata_chunk_seen
+                            || std::any_of(
+                                asset.xll_metadata_chunk_sizes.begin(),
+                                asset.xll_metadata_chunk_sizes.end(),
+                                [](std::uint32_t size) {
+                                    return size != 0U;
+                                });
                     }
                     std::uint32_t asset_payload_offset =
                         header.header_size;
@@ -1031,6 +1058,17 @@ void run_internal_probe(
                             if (!selected_replacement_set) {
                                 continue;
                             }
+                            detected_xll_pcm_bits =
+                                (std::max)(
+                                    detected_xll_pcm_bits,
+                                    static_cast<std::uint32_t>(
+                                        set_header.probe.bit_depth));
+                            detected_xll_storage_bits =
+                                (std::max)(
+                                    detected_xll_storage_bits,
+                                    static_cast<std::uint32_t>(
+                                        set_header.probe
+                                            .storage_bit_depth));
                             if (set_header.hierarchical_channel_set) {
                                 ++xll_hierarchical_channel_set_count;
                                 preceding_channels +=
@@ -1339,13 +1377,21 @@ void run_internal_probe(
             detected_core_channel_count);
     }
     const std::uint32_t source_pcm_bits =
-        detected_extension_pcm_bits != 0U
+        detected_xll_pcm_bits != 0U
+            ? detected_xll_pcm_bits
+        : detected_extension_pcm_bits != 0U
             ? detected_extension_pcm_bits
             : detected_core_pcm_bits;
     if (source_pcm_bits != 0U) {
         print_probe_field(
             "Source PCM resolution",
             std::to_string(source_pcm_bits) + " bit");
+    }
+    if (detected_xll_storage_bits != 0U
+        && detected_xll_storage_bits != source_pcm_bits) {
+        print_probe_field(
+            "XLL storage depth",
+            std::to_string(detected_xll_storage_bits) + " bit");
     }
     if (detected_core_bit_rate > 0) {
         print_probe_field(
@@ -1476,20 +1522,36 @@ void run_internal_probe(
         + metadata_body_parse_failure_count
         + raw_metadata_crc_failure_count
         + xll_pbr_fallback_frame_count;
-    if (probe_failures != 0U) {
+    const bool dtsx_metadata_possibly_absent =
+        uhd_frame_count == 0U
+        && maximum_object_count == 0U
+        && !nonempty_xll_metadata_chunk_seen
+        && (metadata_chunk_count != 0U
+            || raw_metadata_envelope_count != 0U
+            || detected_dtsx_extension_sync_word != 0U);
+    if (probe_failures != 0U
+        || dtsx_metadata_possibly_absent) {
         print_probe_section("Probe warnings", color);
-        print_probe_field(
-            "Malformed object frames",
-            malformed_object_frame_count);
-        print_probe_field(
-            "Metadata body failures",
-            metadata_body_parse_failure_count);
-        print_probe_field(
-            "Raw metadata CRC failures",
-            raw_metadata_crc_failure_count);
-        print_probe_field(
-            "XLL PBR fallback frames",
-            xll_pbr_fallback_frame_count);
+        if (dtsx_metadata_possibly_absent) {
+            print_probe_warning_field(
+                "DTS:X metadata",
+                "possibly absent",
+                color);
+        }
+        if (probe_failures != 0U) {
+            print_probe_field(
+                "Malformed object frames",
+                malformed_object_frame_count);
+            print_probe_field(
+                "Metadata body failures",
+                metadata_body_parse_failure_count);
+            print_probe_field(
+                "Raw metadata CRC failures",
+                raw_metadata_crc_failure_count);
+            print_probe_field(
+                "XLL PBR fallback frames",
+                xll_pbr_fallback_frame_count);
+        }
     }
 
     if (layout != nullptr) {
