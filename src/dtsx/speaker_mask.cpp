@@ -86,8 +86,16 @@ std::uint32_t speaker_count_from_activity_mask(std::uint32_t mask) noexcept {
 }
 
 bool has_height_channels(std::uint32_t mask) noexcept {
-    // libdtsx.so: DTSFrameScanner_HasHeightChannels, 0x31a70.
-    return (mask & 0x01F8E000U) != 0U;
+    // libdtsx.so: DTSFrameScanner_HasHeightChannels, 0x31a70, tests
+    // physical speaker bits. Public callers pass a speaker-activity mask,
+    // so expand it before applying the native physical-height mask.
+    for (const std::uint32_t speaker :
+         expand_speaker_activity_mask(mask)) {
+        if ((speaker & 0x01F8E000U) != 0U) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<std::uint32_t> expand_speaker_activity_mask(

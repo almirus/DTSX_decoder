@@ -419,6 +419,11 @@ bool ObjectAudioRenderer::render(
     const std::int32_t presentation_gain_q23 =
         decode_object_presentation_gain_q23(
             frame.presentation_gain_code);
+    const std::int32_t alternative_presentation_gain_q23 =
+        frame.alternative_presentation_gain_present
+        ? decode_object_alternative_presentation_gain_q23(
+              frame.alternative_presentation_gain_code)
+        : presentation_gain_q23;
     for (std::size_t object_index = 0;
          object_index < frame.objects.size();
          ++object_index) {
@@ -469,7 +474,7 @@ bool ObjectAudioRenderer::render(
               if (!calculate_alternative_destination_gains(
                       *alternative,
                       layout_,
-                      presentation_gain_q23,
+                      alternative_presentation_gain_q23,
                       waveform_gains)) {
                   return false;
               }
@@ -509,6 +514,11 @@ bool ObjectAudioRenderer::render(
             std::cerr
                 << " presentationGain="
                 << static_cast<unsigned>(frame.presentation_gain_code)
+                << " alternativePresentationGain="
+                << (frame.alternative_presentation_gain_present
+                        ? std::to_string(
+                              frame.alternative_presentation_gain_code)
+                        : std::string("normal"))
                 << " objectGainPresent="
                 << (object.spatial_header.gain_present ? 1 : 0)
                 << " objectGainExponent="
@@ -696,6 +706,11 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
     const std::int32_t presentation_gain_q23 =
         decode_object_presentation_gain_q23(
             frame.presentation_gain_code);
+    const std::int32_t alternative_presentation_gain_q23 =
+        frame.alternative_presentation_gain_present
+        ? decode_object_alternative_presentation_gain_q23(
+              frame.alternative_presentation_gain_code)
+        : presentation_gain_q23;
 
     for (std::size_t object_index = 0U;
          object_index < frame.objects.size();
@@ -787,7 +802,7 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
             if (!calculate_alternative_destination_gains(
                     *alternative,
                     bed_speakers,
-                    presentation_gain_q23,
+                    alternative_presentation_gain_q23,
                     waveform_gains)) {
                 return false;
             }

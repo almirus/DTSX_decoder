@@ -33,6 +33,8 @@ struct AudioPresentationMetadata final {
     bool channel_mask_present = false;
     std::uint32_t speaker_activity_mask = 0;
     std::uint8_t speaker_count = 0;
+    bool alternative_render_gain_present = false;
+    std::uint8_t alternative_render_gain_code = 61;
     std::uint8_t render_gain_code = 61;
     bool object_groups_present = false;
     std::uint8_t object_group_count = 0;

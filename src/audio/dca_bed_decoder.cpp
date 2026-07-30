@@ -4,6 +4,7 @@ extern "C" {
 #include "dca_context.h"
 }
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -146,8 +147,10 @@ DcaBedDecoder::DcaBedDecoder()
     , core_context_(
           dcadec_context_create(
               DCADEC_FLAG_CORE_ONLY
-              | DCADEC_FLAG_CORE_BIT_EXACT)) {
-    if (!context_ || !core_context_) {
+              | DCADEC_FLAG_CORE_BIT_EXACT))
+    , core_probe_context_(
+          dcadec_context_create(DCADEC_FLAG_CORE_BIT_EXACT)) {
+    if (!context_ || !core_context_ || !core_probe_context_) {
         last_error_ = "libdcadec context allocation failed";
     }
 }
@@ -158,6 +161,7 @@ void DcaBedDecoder::remember_core(
     const dtsx::ElementaryFrame& frame) {
     pending_core_ = frame.bytes;
     decoded_core_ = {};
+    core_stream_info_ = {};
     if (!core_context_ || frame.bytes.empty()) {
         return;
     }
@@ -176,12 +180,76 @@ void DcaBedDecoder::remember_core(
         decoded_core_,
         false,
         last_error_);
+
+    if (!core_probe_context_) {
+        return;
+    }
+    std::vector<std::uint8_t> probe_packet = frame.bytes;
+    probe_packet.resize(
+        packet_size + DCADEC_BUFFER_PADDING, 0U);
+    const int probe_parse_result = dcadec_context_parse(
+        core_probe_context_.get(),
+        probe_packet.data(),
+        packet_size);
+    if (probe_parse_result < 0) {
+        return;
+    }
+
+    dcadec_core_info* core_info =
+        dcadec_context_get_core_info(core_probe_context_.get());
+    dcadec_exss_info* stream_info =
+        dcadec_context_get_exss_info(core_probe_context_.get());
+    if (core_info != nullptr) {
+        core_stream_info_.sample_rate =
+            static_cast<std::uint32_t>(
+                (std::max)(core_info->sample_rate, 0));
+        core_stream_info_.source_pcm_bits =
+            static_cast<std::uint32_t>(
+                (std::max)(core_info->source_pcm_res, 0));
+        core_stream_info_.samples_per_frame =
+            static_cast<std::uint32_t>(
+                (std::max)(core_info->npcmblocks, 0)) * 32U;
+        core_stream_info_.bit_rate = core_info->bit_rate;
+        core_stream_info_.es_matrix_surround =
+            core_info->es_format;
+    }
+    if (stream_info != nullptr) {
+        core_stream_info_.channels =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->nchannels, 0));
+        core_stream_info_.sample_rate =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->sample_rate, 0));
+        core_stream_info_.source_pcm_bits =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->bits_per_sample, 0));
+        core_stream_info_.speaker_activity_mask =
+            static_cast<std::uint32_t>(stream_info->spkr_mask);
+        core_stream_info_.profile = stream_info->profile;
+        core_stream_info_.matrix_encoding =
+            stream_info->matrix_encoding;
+        core_stream_info_.embedded_6ch =
+            stream_info->embedded_6ch;
+    }
+    core_stream_info_.valid =
+        core_info != nullptr || stream_info != nullptr;
+    dcadec_context_free_core_info(core_info);
+    dcadec_context_free_exss_info(stream_info);
+    (void)dcadec_context_filter(
+        core_probe_context_.get(),
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr);
 }
 
 bool DcaBedDecoder::decode_extension(
     const dtsx::ElementaryFrame& frame,
     DcaDecodedBed& decoded) {
     decoded = {};
+    extension_stream_info_ = {};
     last_error_.clear();
     if (!context_) {
         last_error_ = "libdcadec context is unavailable";
@@ -206,6 +274,31 @@ bool DcaBedDecoder::decode_extension(
         last_error_ = dcadec_strerror(parse_result);
         return false;
     }
+
+    dcadec_exss_info* stream_info =
+        dcadec_context_get_exss_info(context_.get());
+    if (stream_info != nullptr) {
+        extension_stream_info_.channels =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->nchannels, 0));
+        extension_stream_info_.sample_rate =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->sample_rate, 0));
+        extension_stream_info_.source_pcm_bits =
+            static_cast<std::uint32_t>(
+                (std::max)(stream_info->bits_per_sample, 0));
+        extension_stream_info_.speaker_activity_mask =
+            static_cast<std::uint32_t>(stream_info->spkr_mask);
+        extension_stream_info_.profile = stream_info->profile;
+        extension_stream_info_.matrix_encoding =
+            stream_info->matrix_encoding;
+        extension_stream_info_.embedded_stereo =
+            stream_info->embedded_stereo;
+        extension_stream_info_.embedded_6ch =
+            stream_info->embedded_6ch;
+        extension_stream_info_.valid = true;
+    }
+    dcadec_context_free_exss_info(stream_info);
 
     return filter_context(
         context_.get(), decoded, true, last_error_);

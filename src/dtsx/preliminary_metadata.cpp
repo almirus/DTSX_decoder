@@ -289,8 +289,12 @@ bool unpack_audio_presentation_metadata(
             metadata.speaker_count =
                 count_speaker_activity_channels(
                     metadata.speaker_activity_mask);
-            if (source.extract_unsigned(1U) != 0U) {
-                (void)source.extract_unsigned(6U);
+            metadata.alternative_render_gain_present =
+                source.extract_unsigned(1U) != 0U;
+            if (metadata.alternative_render_gain_present) {
+                metadata.alternative_render_gain_code =
+                    static_cast<std::uint8_t>(
+                        source.extract_unsigned(6U));
             }
             if (source.extract_unsigned(1U) != 0U) {
                 metadata.render_gain_code =

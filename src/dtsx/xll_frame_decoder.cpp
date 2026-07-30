@@ -971,9 +971,22 @@ bool XllFrameDecoder::decode_msb_frame(
                 {supplemental_header.probe.frequency_band_count},
                 supplemental_navigation)
             || !supplemental_source.valid()) {
+            const std::uint32_t remaining_bytes =
+                supplemental_source.remaining_bits() / 8U;
+            const std::uint32_t header_bytes =
+                supplemental_header.probe.header_size;
+            const std::uint32_t segments =
+                frame.common.segments_per_frame;
+            const std::uint32_t segment_bits =
+                frame.common.segment_size_bits;
             frame = {};
             last_error_ = "supplemental navigation "
-                + std::to_string(supplemental_index);
+                + std::to_string(supplemental_index)
+                + " (header=" + std::to_string(header_bytes)
+                + ", remaining=" + std::to_string(remaining_bytes)
+                + ", segments=" + std::to_string(segments)
+                + ", size-bits=" + std::to_string(segment_bits)
+                + ")";
             return false;
         }
         std::uint64_t supplemental_audio_bytes = 0U;
@@ -1356,19 +1369,34 @@ bool XllFrameDecoder::decode_msb_frame(
                         == reference_speaker;
                 });
             if (lossy == lossy_base_channels.end()
-                && (reference_speaker == (1U << 9U)
+                && (reference_speaker == (1U << 3U)
+                    || reference_speaker == (1U << 4U)
+                    || reference_speaker == (1U << 7U)
+                    || reference_speaker == (1U << 8U)
+                    || reference_speaker == (1U << 9U)
                     || reference_speaker == (1U << 10U))) {
-                const std::uint32_t core_surround =
-                    reference_speaker == (1U << 9U)
-                    ? (1U << 7U)
-                    : (1U << 8U);
+                // libdtsx.so dtsGetChPosnBySpkrMask applies the native
+                // Ls/Lss and Rs/Rss equivalence while combining a Core
+                // residual.  The Core WAVE mask can expose this pair as
+                // side, back or DTS Lss/Rss positions.
+                const bool left_surround =
+                    reference_speaker == (1U << 3U)
+                    || reference_speaker == (1U << 7U)
+                    || reference_speaker == (1U << 9U);
                 lossy = std::find_if(
                     lossy_base_channels.begin(),
                     lossy_base_channels.end(),
-                    [core_surround](
+                    [left_surround](
                         const XllLossyBaseChannel& candidate) {
-                        return candidate.speaker_mask
-                            == core_surround;
+                        const std::uint32_t mask =
+                            candidate.speaker_mask;
+                        return left_surround
+                            ? mask == (1U << 3U)
+                                  || mask == (1U << 7U)
+                                  || mask == (1U << 9U)
+                            : mask == (1U << 4U)
+                                  || mask == (1U << 8U)
+                                  || mask == (1U << 10U);
                     });
             }
             if (lossy == lossy_base_channels.end()

@@ -7,6 +7,7 @@
 #include "dtsx/object_waveform_map.hpp"
 #include "dtsx/preliminary_metadata.hpp"
 #include "dtsx/speaker_mask.hpp"
+#include "dtsx/xll_channel_set.hpp"
 
 #include <algorithm>
 #include <array>
@@ -381,18 +382,68 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     == 69U) {
                     // libdtsx.so: sub_C48C0 ->
                     // dtsGetNumChSetsAudioChunk(69) ->
-                    // dtsx_decodeTryXLLChSetHeader.  The legacy type-69
-                    // audio-chunk navigation occupies 17 bytes before the
-                    // independent XLL channel-set header.
-                    constexpr std::uint32_t
-                        kLegacyXllAudioChunkPrefixBytes = 17U;
-                    const std::uint32_t channel_set_offset =
-                        associated_offset
-                        + kLegacyXllAudioChunkPrefixBytes;
+                    // dtsx_decodeTryXLLChSetHeader.  The native chunk list
+                    // stores the independent XLL bitstream pointer after
+                    // parsing the variable type-69 navigation.  Recover the
+                    // same pointer by its channel-set CRC and dimensions;
+                    // the navigation is 16 bytes in zero-length type-2
+                    // envelopes and 17 bytes in the usual one-byte form.
                     const std::size_t metadata_buffer_size =
                         metadata_in_assembled_xll
                         ? xll_pbr.size()
                         : asset.component_size_bytes[9U];
+                    std::uint32_t channel_set_offset = 0U;
+                    const std::uint32_t search_end =
+                        static_cast<std::uint32_t>((std::min)(
+                            metadata_buffer_size,
+                            static_cast<std::size_t>(
+                                associated_offset + 32U)));
+                    for (std::uint32_t candidate = associated_offset;
+                         candidate < search_end;
+                         ++candidate) {
+                        dtsx::bitstream::Cursor probe_source =
+                            metadata_in_assembled_xll
+                            ? assembled_xll_words->cursor()
+                            : words.cursor();
+                        const std::uint32_t absolute_candidate =
+                            metadata_in_assembled_xll
+                            ? candidate
+                            : asset_payload_offset
+                                  + asset.component_byte_offsets[9U]
+                                  + candidate;
+                        probe_source.fast_forward(
+                            static_cast<std::int32_t>(
+                                8U * absolute_candidate));
+                        probe_source = probe_source.limited(
+                            static_cast<std::uint32_t>(
+                                8U
+                                * (metadata_buffer_size
+                                   - candidate)));
+                        dtsx::XllChannelSetProbe probe;
+                        if (dtsx::probe_xll_channel_set_header(
+                                probe_source,
+                                false,
+                                probe)
+                            && probe.channel_count
+                                   == combined_mix
+                                          .added_speaker_masks
+                                          .size()
+                            && probe.sample_rate == asset.sample_rate
+                            && probe.bit_depth != 0U
+                            && probe.bit_depth
+                                   <= probe.storage_bit_depth
+                            && probe.storage_bit_depth == 24U
+                            && probe.frequency_ratio == 1U
+                            && probe.header_size <= 64U) {
+                            channel_set_offset = candidate;
+                            break;
+                        }
+                    }
+                    if (channel_set_offset == 0U) {
+                        last_error_ =
+                            "type-69 XLL channel-set navigation";
+                        return ObjectFrameDecodeResult::Malformed;
+                    }
                     if (channel_set_offset
                         < metadata_buffer_size) {
                         dtsx::bitstream::Cursor
@@ -995,6 +1046,10 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             }
             presentation_gain_code_ =
                 presentation.render_gain_code;
+            alternative_presentation_gain_present_ =
+                presentation.alternative_render_gain_present;
+            alternative_presentation_gain_code_ =
+                presentation.alternative_render_gain_code;
             if (presentation.metadata_present) {
                 have_current_object_presentation = true;
                 current_object_count = presentation.objects.size();
@@ -1067,6 +1122,10 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     }
     decoded.metadata_speaker_activity_mask =
         metadata_speaker_activity_mask_;
+    decoded.alternative_presentation_gain_present =
+        alternative_presentation_gain_present_;
+    decoded.alternative_presentation_gain_code =
+        alternative_presentation_gain_code_;
     decoded.presentation_gain_code =
         presentation_gain_code_;
     decoded.objects = object_state_;

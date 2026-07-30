@@ -7,6 +7,10 @@ namespace dtsx_decode {
 [[nodiscard]] std::int32_t decode_object_presentation_gain_q23(
     std::uint8_t gain_code) noexcept;
 
+[[nodiscard]] std::int32_t
+decode_object_alternative_presentation_gain_q23(
+    std::uint8_t gain_code) noexcept;
+
 [[nodiscard]] std::int32_t decode_object_point_gain_q23(
     std::uint8_t gain_code,
     std::int32_t object_gain_q15 = 0x8000,

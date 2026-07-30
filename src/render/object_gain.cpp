@@ -47,6 +47,19 @@ std::int32_t decode_object_presentation_gain_q23(
     return kScaleCoefficientTable[table_index] << 8U;
 }
 
+std::int32_t decode_object_alternative_presentation_gain_q23(
+    std::uint8_t gain_code) noexcept {
+    // libdtsx(v2).so.c: dtsPlayerObjectRenderer_RenderObjects,
+    // 0x123884. Renderer mode 5 uses dtsLookUpScaleCoeffTable(code, 3):
+    // codes below 23 are clamped to 23 before the table lookup.
+    const std::uint8_t clamped_code =
+        gain_code < 23U ? 23U : gain_code;
+    const std::size_t table_index = std::min<std::size_t>(
+        static_cast<std::size_t>(clamped_code - 1U),
+        kScaleCoefficientTable.size() - 1U);
+    return kScaleCoefficientTable[table_index] << 8U;
+}
+
 std::int32_t decode_object_point_gain_q23(
     std::uint8_t gain_code,
     std::int32_t object_gain_q15,
