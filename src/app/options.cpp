@@ -138,14 +138,14 @@ Options parse_options(int argc, wchar_t** argv) {
             options.metadata_output = require_value(
                 argc, argv, i, "--metadata-output");
             options.metadata_output_explicit = true;
-        } else if (arg == L"--coordinates-output") {
-            options.coordinates_output = require_value(
-                argc, argv, i, "--coordinates-output");
-            options.coordinates_output_explicit = true;
         } else if (arg == L"--objects-output-dir") {
-            options.objects_output_directory = require_value(
-                argc, argv, i, "--objects-output-dir");
+            if (i + 1 < argc && argv[i + 1][0] != L'-') {
+                options.objects_output_directory = require_value(
+                    argc, argv, i, "--objects-output-dir");
+            }
             options.objects_output_directory_explicit = true;
+        } else if (arg == L"--objects-output-bed") {
+            options.objects_output_bed = true;
         } else if (arg == L"--ffmpeg") {
             options.ffmpeg = require_value(argc, argv, i, "--ffmpeg");
         } else if (arg == L"--layout") {
@@ -214,8 +214,8 @@ void print_help() {
         << "  -i, --input PATH       Input .mkv, .mp4, .m2ts, .dts or .dtshd\n"
         << "  -o, --output PATH      Output PCM24 WAV\n"
         << "      --metadata-output PATH  Write parsed DTS:X metadata JSONL\n"
-        << "      --coordinates-output PATH  Write decoded object coordinates JSONL\n"
         << "      --objects-output-dir PATH  Write per-object waveform WAV and coordinates\n"
+        << "      --objects-output-bed      Write multichannel bed.wav and bed.json\n"
         << "      --audio-track N    Audio track ordinal; default: best DTS track\n"
         << "      --layout NAME      Output layout; default: DTS:X metadata layout\n"
         << "      --channels N       Validate layout channel count only\n"

@@ -8,6 +8,7 @@ namespace dtsx_decode {
 
 enum class RenderMode {
     Bed,
+    BedWithoutObjects,
     Objects,
     ObjectsOnly,
 };
@@ -16,7 +17,6 @@ struct Options {
     std::filesystem::path input;
     std::filesystem::path output;
     std::filesystem::path metadata_output;
-    std::filesystem::path coordinates_output;
     std::filesystem::path objects_output_directory;
     std::filesystem::path ffmpeg = L"ffmpeg.exe";
     std::string layout;
@@ -27,8 +27,8 @@ struct Options {
     RenderMode render_mode = RenderMode::Objects;
     bool output_explicit = false;
     bool metadata_output_explicit = false;
-    bool coordinates_output_explicit = false;
     bool objects_output_directory_explicit = false;
+    bool objects_output_bed = false;
     bool overwrite = false;
     bool verbose = false;
     bool help = false;

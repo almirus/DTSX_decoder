@@ -39,9 +39,13 @@ private:
     bool reported_reverse_metadata_ = false;
     std::int32_t reported_maximum_gain_ = 0;
     std::map<GainKey, NativeGainRamp> gain_state_;
-    std::array<std::uint32_t, 2> rendered_block_counts_{};
+    // visio-libdtsx.so.c: player renderer modes 0, 1 and 5 are three
+    // independent native renderer instances.
+    std::array<std::uint32_t, 3> rendered_block_counts_{};
     std::map<GainKey, NativeGainRamp> reverse_gain_state_;
-    std::uint32_t reverse_block_count_ = 0U;
+    // visio-libdtsx.so.c: legacy reverse renderer modes 2, 3 and 4 own
+    // independent smoothing/snap state.
+    std::array<std::uint32_t, 3> reverse_block_counts_{};
 };
 
 } // namespace dtsx_decode

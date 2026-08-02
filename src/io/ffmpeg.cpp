@@ -35,8 +35,8 @@ FfmpegDtsReader::FfmpegDtsReader(const Options& options) {
             std::to_wstring(options.duration_seconds));
     }
     if (options.probe && !options.full_probe) {
-        arguments.emplace_back(L"-frames:a");
-        arguments.emplace_back(L"64");
+        arguments.emplace_back(L"-t");
+        arguments.emplace_back(L"10");
     }
     arguments.insert(arguments.end(), {
         L"-f",

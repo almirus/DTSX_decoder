@@ -106,60 +106,10 @@ bool ObjectStemWriter::write(
     timeline_end_ = std::max(
         timeline_end_,
         sample_position + duration_samples);
-    if (frame.objects.empty()
-        && !frame.waveform_channels.empty()) {
-        for (std::size_t waveform = 0U;
-             waveform < frame.waveform_channels.size();
-             ++waveform) {
-            if (frame.waveform_channels[waveform].size()
-                != duration_samples) {
-                return false;
-            }
-            const StemKey key{
-                0U,
-                static_cast<std::uint32_t>(waveform),
-            };
-            WavWriter& stem = wav(key);
-            if (stem.frames_written() > sample_position) {
-                return false;
-            }
-            constexpr std::size_t kSilenceBlockSamples = 4096U;
-            while (stem.frames_written() < sample_position) {
-                const std::uint64_t missing =
-                    sample_position - stem.frames_written();
-                const std::size_t block_size =
-                    static_cast<std::size_t>(
-                        std::min<std::uint64_t>(
-                            missing, kSilenceBlockSamples));
-                stem.write_planar_24({
-                    std::vector<std::int32_t>(block_size, 0),
-                });
-            }
-            stem.write_planar_24(
-                {frame.waveform_channels[waveform]});
-            if (waveform
-                    < frame.waveform_speaker_masks.size()
-                && frame.waveform_speaker_masks[waveform]
-                       != 0U) {
-                coordinates(key).write_destination(
-                    sample_position,
-                    duration_samples,
-                    sample_rate_,
-                    0U,
-                    static_cast<std::uint32_t>(waveform),
-                    frame.waveform_speaker_masks[waveform],
-                    61U,
-                    0U);
-            } else {
-                coordinates(key).write_unavailable(
-                    sample_position,
-                    duration_samples,
-                    sample_rate_,
-                    0U,
-                    static_cast<std::uint32_t>(waveform),
-                    "object_coordinates_unavailable");
-            }
-        }
+    if (frame.objects.empty()) {
+        // Bed and supplemental channels without an object metadata block are
+        // not object stems.  Keeping them here would expose the coded bed as
+        // object_000_waveform_* in --objects-output-dir.
         return true;
     }
     for (std::size_t object_index = 0;

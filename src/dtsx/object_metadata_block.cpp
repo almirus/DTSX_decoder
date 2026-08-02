@@ -16,6 +16,33 @@ bool unpack_object_metadata_bodies(
             continue;
         }
 
+        // dtsParseExSSChunks reads object+0x238 for every newly unpacked
+        // object body.  This field is not conditional on the presentation's
+        // object-group table.  The same object+0x238 branch appears in
+        // libdtsx.so.c, libdtsx(v2).so.c, libdtsx(v3).so.c,
+        // visio-libdtsx.so.c, and hisense-libdtsx.so.c.
+        (void)object_groups_present;
+        block.spatial_group_present =
+            source.extract_unsigned(1U) != 0U;
+        block.spatial_group = block.spatial_group_present
+            ? static_cast<std::uint8_t>(source.extract_unsigned(4U))
+            : static_cast<std::uint8_t>(15U);
+
+        // libdtsx.so: dtsParseExSSChunks, 0xa1c38..0xa1c50.  These two
+        // per-object flags precede the spatial header for every object body.
+        // The first enables the later inter-object metadata section; the
+        // second is retained by the native object state.  Skipping them moves
+        // every coordinate and gain field two bits early.
+        block.inter_object_metadata_present =
+            source.extract_unsigned(1U) != 0U;
+        block.flag_at_580 =
+            source.extract_unsigned(1U) != 0U;
+
+        // dtsParseExSSChunks stores object+0x238/0x23c/0x244 first,
+        // then decodes object+0x24a waveform offsets, and only then enters
+        // the metadata-mode spatial body.  All five named dtsParseExSSChunks
+        // implementations in the available libdtsx decompiles use this
+        // ordering.
         block.waveform_channel_offsets.assign(
             block.preamble.waveform_count, 0U);
         if (sequential_waveform_offsets) {
@@ -36,24 +63,6 @@ bool unpack_object_metadata_bodies(
                         + 1U);
             }
         }
-
-        if (object_groups_present) {
-            block.spatial_group_present =
-                source.extract_unsigned(1U) != 0U;
-            block.spatial_group = block.spatial_group_present
-                ? static_cast<std::uint8_t>(source.extract_unsigned(4U))
-                : static_cast<std::uint8_t>(15U);
-        }
-
-        // libdtsx.so: dtsParseExSSChunks, 0xa1c38..0xa1c50.  These two
-        // per-object flags precede the spatial header for every object body.
-        // The first enables the later inter-object metadata section; the
-        // second is retained by the native object state.  Skipping them moves
-        // every coordinate and gain field two bits early.
-        block.inter_object_metadata_present =
-            source.extract_unsigned(1U) != 0U;
-        block.flag_at_580 =
-            source.extract_unsigned(1U) != 0U;
 
         const std::uint8_t mode = block.preamble.metadata_mode;
         if (mode <= 1U) {

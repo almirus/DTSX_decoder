@@ -397,8 +397,8 @@ bool LayoutPanner::gains_q15(
     // destination; its synthesized +/-45 degree rings provide the vertical
     // support.  Do not flatten the metadata coordinate before hull panning.
     const float elevation = coordinates.elevation_degrees;
-    const bool panned = width_degrees == 0.0F
-            && height_degrees == 0.0F
+    bool panned = width_degrees == 0.0F
+        && height_degrees == 0.0F
         ? pan_point_source(
               panner_vector_from_degrees(
                   coordinates.azimuth_degrees, elevation),
@@ -418,6 +418,26 @@ bool LayoutPanner::gains_q15(
               1.0e-6F,
               hull_normalization,
               floating);
+    if (!panned
+        && width_degrees == 0.0F
+        && height_degrees == 0.0F
+        && (elevation < -45.0F || elevation > 45.0F)) {
+        // libdtsx(v2).so.c: dts_3d_hull_f32_t_pan projects a direction
+        // outside the speaker hull onto its nearest hull face.  The
+        // synthesized DTS:X rings use +/-45 degrees when a physical ring is
+        // absent; retry the point on that same boundary instead of dropping
+        // the whole object contribution.
+        const float hull_elevation =
+            (std::max)(-45.0F, (std::min)(45.0F, elevation));
+        panned = pan_point_source(
+            panner_vector_from_degrees(
+                coordinates.azimuth_degrees, hull_elevation),
+            panner_channel_count_,
+            triplets_,
+            1.0e-6F,
+            hull_normalization,
+            floating);
+    }
     if (!panned) {
         return false;
     }

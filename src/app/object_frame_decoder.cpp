@@ -393,11 +393,21 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                         ? xll_pbr.size()
                         : asset.component_size_bytes[9U];
                     std::uint32_t channel_set_offset = 0U;
-                    const std::uint32_t search_end =
-                        static_cast<std::uint32_t>((std::min)(
+                    const std::uint32_t associated_extent =
+                        associated_index
+                                < asset.xll_associated_chunk_extents.size()
+                            ? asset.xll_associated_chunk_extents[
+                                  associated_index]
+                            : 0U;
+                    const std::uint32_t search_extent =
+                        (std::max)(32U, associated_extent);
+                    const std::size_t search_limit =
+                        (std::min)(
                             metadata_buffer_size,
-                            static_cast<std::size_t>(
-                                associated_offset + 32U)));
+                            static_cast<std::size_t>(associated_offset)
+                                + search_extent);
+                    const std::uint32_t search_end =
+                        static_cast<std::uint32_t>(search_limit);
                     for (std::uint32_t candidate = associated_offset;
                          candidate < search_end;
                          ++candidate) {
@@ -439,12 +449,15 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                             break;
                         }
                     }
-                    if (channel_set_offset == 0U) {
-                        last_error_ =
-                            "type-69 XLL channel-set navigation";
-                        return ObjectFrameDecodeResult::Malformed;
-                    }
-                    if (channel_set_offset
+                    // Type-69 carries an optional supplemental XLL channel
+                    // set.  Some frames keep the associated-chunk entry but
+                    // do not carry a complete independently decodable set.
+                    // Do not reject the main XLL frame in that case: doing
+                    // so leaves it in the PBR buffer and turns one missing
+                    // supplemental set into a cascade of silent stem gaps
+                    // and eventual smoothing-buffer overflow.
+                    if (channel_set_offset != 0U
+                        && channel_set_offset
                         < metadata_buffer_size) {
                         dtsx::bitstream::Cursor
                             supplemental_source =

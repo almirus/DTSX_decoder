@@ -410,8 +410,11 @@ bool ObjectAudioRenderer::render(
         layout_.channels.size(),
         std::vector<std::int32_t>(
             frame.samples_per_channel, 0));
-    std::array<std::vector<WaveformRenderBlock>, 2> render_groups;
-    std::array<std::vector<GainKey>, 2> render_key_groups;
+    // Player renderers are distinct native instances: mode 0 handles
+    // spatial metadata, mode 1 handles channel/1-to-1 metadata, and mode 5
+    // handles layout-specific alternative render sets.
+    std::array<std::vector<WaveformRenderBlock>, 3> render_groups;
+    std::array<std::vector<GainKey>, 3> render_key_groups;
     std::vector<GainKey> render_keys;
     const std::vector<std::uint32_t> metadata_speakers =
         dtsx::expand_speaker_activity_mask(
@@ -449,15 +452,17 @@ bool ObjectAudioRenderer::render(
         const std::uint8_t metadata_mode =
             object.preamble.metadata_mode;
         std::int32_t maximum_destination_gain = 0;
+        std::uint32_t renderer_mode = 0U;
         std::size_t renderer_group = 0U;
-        // libdtsx(v2).so.c:
+        // visio-libdtsx.so.c:
         // dtsPlayerObjectRenderer_RenderObjects dispatches metadata modes
-        // 0/1 to updateRendererWith3dObjectMetadata, mode 2 to
-        // updateRendererWith3dChannelMetadata, and mode 3 to
-        // updateRendererWith1to1Channel. Renderer mode 5 intercepts a
-        // mode-0/1 object when its alternative rendering set matches the
-        // requested output layout.
+        // 0/1 through player renderer mode 0, metadata modes 2/3 through
+        // player renderer mode 1, and a matching alternative render set
+        // through player renderer mode 5. The three renderer instances own
+        // independent gain state and block counters.
         if (metadata_mode > 1U) {
+            renderer_mode = 1U;
+            renderer_group = 1U;
             calculate_explicit_destination_gains(
                 object,
                 layout_,
@@ -470,7 +475,8 @@ bool ObjectAudioRenderer::render(
           if (alternative != nullptr) {
               // libdtsx.so: renderer mode 5 partitions spatial objects
               // with a matching coded destination layout away from mode 0.
-              renderer_group = 1U;
+              renderer_mode = 5U;
+              renderer_group = 2U;
               if (!calculate_alternative_destination_gains(
                       *alternative,
                       layout_,
@@ -578,22 +584,21 @@ bool ObjectAudioRenderer::render(
                  destination < layout_.channels.size();
                  ++destination) {
                 const GainKey key{
-                    static_cast<std::uint32_t>(renderer_group),
+                    renderer_mode,
                     object_id,
                     static_cast<std::uint32_t>(waveform),
                     static_cast<std::uint32_t>(destination),
                 };
                 NativeGainRamp& state = gain_state_[key];
                 const std::int32_t expected_base_gain =
-                    renderer_group == 0U ? 36 : 492;
+                    renderer_mode == 0U ? 36 : 492;
                 if (state.fractional_bits == 0U ||
                     state.base_gain != expected_base_gain) {
                     // libdtsx.so:
                     // dts_3d_complex_channel_renderer_t_initialize,
                     // 0xe6588. dtsPlayerObjectRenderer_RenderObjects
-                    // uses Q15 smoothing factor 36 for the normal
-                    // renderer (metadata modes 0..3) and 492 only for
-                    // layout-specific renderer mode 5.
+                    // uses Q15 smoothing factor 36 for renderer mode 0
+                    // and 492 for renderer modes 1 and 5.
                     state.fractional_bits = 15U;
                     state.base_gain = expected_base_gain;
                     state.accumulator = 0;
@@ -609,14 +614,15 @@ bool ObjectAudioRenderer::render(
         }
     }
     if (render_groups[0].empty()
-        && render_groups[1].empty()) {
+        && render_groups[1].empty()
+        && render_groups[2].empty()) {
         gain_state_.clear();
         return true;
     }
     reported_metadata_ = true;
-    for (std::size_t group = 0U;
-         group < render_groups.size();
-         ++group) {
+    // DTSXDecFramePlayer renders the player instances in mode order 1, 5, 0.
+    constexpr std::array<std::size_t, 3> kNativeForwardOrder{{1U, 2U, 0U}};
+    for (const std::size_t group : kNativeForwardOrder) {
         if (render_groups[group].empty()) {
             continue;
         }
@@ -701,8 +707,8 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
     }
     const LayoutPanner bed_panner(bed_layout);
 
-    std::vector<WaveformRenderBlock> render_blocks;
-    std::vector<GainKey> render_keys;
+    std::array<std::vector<WaveformRenderBlock>, 3> render_groups;
+    std::array<std::vector<GainKey>, 3> render_key_groups;
     const std::int32_t presentation_gain_q23 =
         decode_object_presentation_gain_q23(
             frame.presentation_gain_code);
@@ -717,7 +723,9 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
          ++object_index) {
         const dtsx::ObjectMetadataBlock& object =
             frame.objects[object_index];
-        if (object.preamble.metadata_mode > 1U
+        const std::uint8_t metadata_mode =
+            object.preamble.metadata_mode;
+        if (metadata_mode > 3U
             || !object.body_parsed) {
             if (verbose_ && !reported_reverse_metadata_) {
                 std::cerr
@@ -758,10 +766,12 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
                 frame.metadata_speaker_activity_mask;
         }
         const dtsx::AlternativeRenderSet* alternative =
-            find_alternative_render_set(
-                object,
-                0U,
-                source_activity_mask);
+            metadata_mode <= 1U
+            ? find_alternative_render_set(
+                  object,
+                  0U,
+                  source_activity_mask)
+            : nullptr;
         if (verbose_ && !reported_reverse_metadata_) {
             std::cerr
                 << "Object reverse renderer: id="
@@ -807,14 +817,13 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
                 return false;
             }
         } else {
-            // libdtsx.so: renderer mode 2 selects metadata-mode-0/1 objects
-            // without a matching alternative render set.  ReverseRenderObjects
-            // dispatches mode 0 to sub_5F12C (spatial metadata), but mode 1 to
-            // sub_5F810, which uses the coded coherent/noncoherent destination
-            // gains.  Type-68 object streams use mode 1 here.
-            reverse_mode = 2U;
-            smoothing_factor = 36;
-            if (object.preamble.metadata_mode == 1U) {
+            // visio-libdtsx.so.c: ReverseRenderObjects routes metadata modes
+            // 0/1 through renderer mode 2 (smoothing 36) and modes 2/3
+            // through renderer mode 3 (smoothing 492). Renderer mode 4 above
+            // handles layout-specific alternative rendering for modes 0/1.
+            reverse_mode = metadata_mode <= 1U ? 2U : 3U;
+            smoothing_factor = reverse_mode == 2U ? 36 : 492;
+            if (metadata_mode >= 1U) {
                 const std::uint32_t metadata_activity_mask =
                     frame.metadata_speaker_activity_mask != 0U
                     ? frame.metadata_speaker_activity_mask
@@ -828,7 +837,7 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
                     metadata_speakers,
                     presentation_gain_q23,
                     waveform_gains);
-            } else if (object.preamble.metadata_mode == 0U) {
+            } else if (metadata_mode == 0U) {
                 if (!calculate_spatial_destination_gains(
                         object,
                         bed_panner,
@@ -836,10 +845,11 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
                         waveform_gains)) {
                     return false;
                 }
-            } else {
-                continue;
             }
         }
+
+        const std::size_t reverse_group =
+            static_cast<std::size_t>(reverse_mode - 2U);
 
         const std::uint32_t object_id =
             object.object_id_available
@@ -881,45 +891,59 @@ bool ObjectAudioRenderer::remove_embedded_object_fold_down(
                 block.destination_gains[destination]
                     .destination_gain =
                     waveform_gains[waveform][destination];
-                render_keys.push_back(key);
+                render_key_groups[reverse_group].push_back(key);
             }
-            render_blocks.push_back(std::move(block));
+            render_groups[reverse_group].push_back(std::move(block));
         }
     }
 
-    if (render_blocks.empty()) {
+    if (render_groups[0].empty()
+        && render_groups[1].empty()
+        && render_groups[2].empty()) {
         reported_reverse_metadata_ = true;
         reverse_gain_state_.clear();
         return true;
     }
     reported_reverse_metadata_ = true;
-    const bool snap_gain_to_zero_db =
-        (reverse_block_count_ & 1U) != 0U;
-    ++reverse_block_count_;
-    if (!render_object_waveforms(
-            render_blocks,
-            frame.bed_channels,
-            15U,
-            GainApplyMode::Subtract,
-            false,
-            snap_gain_to_zero_db)) {
-        return false;
-    }
-    std::size_t key_index = 0U;
-    for (const WaveformRenderBlock& block : render_blocks) {
-        for (const DestinationGainState& gain :
-             block.destination_gains) {
-            reverse_gain_state_[render_keys[key_index++]] =
-                gain.ramp;
+    // Native control invokes reverse modes 4, 3, then 2. Each renderer owns
+    // an independent alternating snap-to-0-dB block counter.
+    constexpr std::array<std::size_t, 3> kNativeOrder{{2U, 1U, 0U}};
+    for (const std::size_t group : kNativeOrder) {
+        if (render_groups[group].empty()) {
+            continue;
+        }
+        const bool snap_gain_to_zero_db =
+            (reverse_block_counts_[group] & 1U) != 0U;
+        ++reverse_block_counts_[group];
+        if (!render_object_waveforms(
+                render_groups[group],
+                frame.bed_channels,
+                15U,
+                GainApplyMode::Subtract,
+                false,
+                snap_gain_to_zero_db)) {
+            return false;
+        }
+        std::size_t key_index = 0U;
+        for (const WaveformRenderBlock& block : render_groups[group]) {
+            for (const DestinationGainState& gain :
+                 block.destination_gains) {
+                reverse_gain_state_[
+                    render_key_groups[group][key_index++]] = gain.ramp;
+            }
         }
     }
     for (auto state = reverse_gain_state_.begin();
          state != reverse_gain_state_.end();) {
-        if (std::find(
-                render_keys.begin(),
-                render_keys.end(),
-                state->first)
-            == render_keys.end()) {
+        const std::size_t mode =
+            static_cast<std::size_t>(std::get<0>(state->first));
+        if (mode < 2U
+            || mode > 4U
+            || std::find(
+                   render_key_groups[mode - 2U].begin(),
+                   render_key_groups[mode - 2U].end(),
+                   state->first)
+               == render_key_groups[mode - 2U].end()) {
             state = reverse_gain_state_.erase(state);
         } else {
             ++state;

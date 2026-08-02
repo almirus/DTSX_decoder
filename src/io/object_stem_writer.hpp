@@ -23,6 +23,9 @@ public:
         const DecodedObjectAudioFrame& frame,
         std::uint64_t sample_position,
         std::uint32_t duration_samples);
+    [[nodiscard]] bool has_audio_stems() const noexcept {
+        return !wavs_.empty();
+    }
     void close();
 
 private:

@@ -324,6 +324,7 @@ struct ChannelCapacity final {
     std::uint32_t coded_bed_speakers = 0U;
     std::uint32_t reference_speakers = 0U;
     std::uint32_t supplemental_speakers = 0U;
+    bool any_objects = false;
     bool dynamic_objects = false;
 };
 
@@ -411,8 +412,10 @@ ChannelCapacity inspect_channel_capacity(const Options& options) {
                         decoded.waveform_speaker_masks[waveform];
                 }
             }
-            capacity.dynamic_objects =
-                capacity.dynamic_objects || !decoded.objects.empty();
+            if (!decoded.objects.empty()) {
+                capacity.any_objects = true;
+                capacity.dynamic_objects = true;
+            }
         }
         if (extension_frames >= kExtensionFrames) {
             break;
@@ -830,8 +833,7 @@ void run_internal_probe(
     const Options& options,
     const AudioProbe& audio_probe,
     const ChannelLayout* layout) {
-    constexpr std::uint64_t kQuickProbeExtensionFrames = 64U;
-    constexpr std::uint64_t kQuickProbeElementaryFrames = 256U;
+    constexpr std::uint64_t kQuickProbeDurationSeconds = 10U;
 
     ProgressReporter progress;
     progress.update("probe", -1);
@@ -1236,10 +1238,20 @@ void run_internal_probe(
             }
         }
         if (!options.full_probe
-            && !probe_is_demuxer_bounded
-            && (extension_frame_count >= kQuickProbeExtensionFrames
-                || frame_count >= kQuickProbeElementaryFrames)) {
-            break;
+            && !probe_is_demuxer_bounded) {
+            const std::uint64_t timed_frame_count =
+                uhd_frame_count != 0U
+                    ? uhd_frame_count
+                    : extension_frame_count != 0U
+                    ? extension_frame_count
+                    : core_frame_count;
+            if (detected_frame_duration != 0U
+                && detected_stream_sample_rate != 0U
+                && timed_frame_count * detected_frame_duration
+                    >= kQuickProbeDurationSeconds
+                        * detected_stream_sample_rate) {
+                break;
+            }
         }
     }
 
@@ -1604,10 +1616,6 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
     }
     DtsFrameReader reader(options);
     std::unique_ptr<ObjectSidecarWriter> coordinate_output;
-    if (options.coordinates_output_explicit) {
-        coordinate_output = std::make_unique<ObjectSidecarWriter>(
-            options.coordinates_output, options.overwrite);
-    }
     dtsx::ElementaryFrame frame;
     std::uint64_t frame_index = 0;
     std::uint64_t metadata_sample_position = 0;
@@ -2479,7 +2487,9 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
     }
 }
 
-void export_object_stems(const Options& options) {
+void export_object_stems(
+    const Options& options,
+    bool require_audio = true) {
     DtsFrameReader reader(options);
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
@@ -2488,6 +2498,14 @@ void export_object_stems(const Options& options) {
     std::uint64_t sample_position = 0U;
     std::uint32_t last_extension_frame_duration = 0U;
     bool wrote_audio = false;
+    ProgressReporter progress;
+    std::error_code size_error;
+    const std::uint64_t input_size =
+        std::filesystem::file_size(options.input, size_error);
+    std::uint64_t input_bytes = 0U;
+    progress.update(
+        "objects",
+        size_error ? -1 : 0);
 
     const auto advance_ignored_extension =
         [&sample_position, &last_extension_frame_duration](
@@ -2515,6 +2533,12 @@ void export_object_stems(const Options& options) {
         };
 
     while (reader.read(elementary)) {
+        input_bytes += elementary.bytes.size();
+        progress.update(
+            "objects",
+            size_error
+                ? -1
+                : decode_percent(input_bytes, input_size));
         if (elementary.packing
                 != dtsx::StreamPacking::ExtensionBigEndian
             && elementary.packing
@@ -2529,6 +2553,20 @@ void export_object_stems(const Options& options) {
             decoder.decode(
                 elementary, decoded, lossy_base);
         if (decode_result != ObjectFrameDecodeResult::Decoded) {
+            if (options.verbose) {
+                std::cerr
+                    << "Object stem frame skipped: samples="
+                    << sample_position
+                    << " result="
+                    << (decode_result
+                                == ObjectFrameDecodeResult::Malformed
+                            ? "malformed"
+                            : "ignored");
+                if (!decoder.last_error().empty()) {
+                    std::cerr << " reason=" << decoder.last_error();
+                }
+                std::cerr << '\n';
+            }
             if (elementary.packing == dtsx::StreamPacking::ExtensionBigEndian
                 || elementary.packing
                     == dtsx::StreamPacking::ExtensionLittleEndian) {
@@ -2551,12 +2589,13 @@ void export_object_stems(const Options& options) {
                 "decoded object waveform channel is unavailable");
         }
         sample_position += decoded.samples_per_channel;
-        wrote_audio = true;
+        wrote_audio = writer->has_audio_stems();
     }
     if (writer != nullptr) {
         writer->close();
     }
-    if (!wrote_audio) {
+    progress.done("objects");
+    if (require_audio && !wrote_audio) {
         throw std::runtime_error(
             "no decodable DTS:X object waveforms were found");
     }
@@ -2949,7 +2988,8 @@ std::uint64_t render_object_stream(
     const ChannelLayout& layout,
     std::uint32_t output_sample_rate,
     const std::filesystem::path& output_path,
-    RenderMode render_mode) {
+    RenderMode render_mode,
+    std::uint32_t* rendered_sample_rate = nullptr) {
     DtsFrameReader reader(options);
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
@@ -3058,6 +3098,9 @@ std::uint64_t render_object_stream(
                 "sample rate");
         }
         if (writer == nullptr) {
+            if (rendered_sample_rate != nullptr) {
+                *rendered_sample_rate = decoded.sample_rate;
+            }
             writer = std::make_unique<WavWriter>(
                 output_path,
                 layout,
@@ -3075,6 +3118,7 @@ std::uint64_t render_object_stream(
         std::vector<std::vector<std::int32_t>> bed;
         const bool rendered_supplemental =
             render_mode != RenderMode::Bed
+            && render_mode != RenderMode::BedWithoutObjects
             && map_supplemental_xll_to_height_layout(
                 decoded, layout, bed);
         if (!rendered_supplemental
@@ -3083,7 +3127,8 @@ std::uint64_t render_object_stream(
                 "native DTS:X XLL bed cannot be mapped to the requested "
                 "layout");
         }
-        if (render_mode == RenderMode::Bed) {
+        if (render_mode == RenderMode::Bed
+            || render_mode == RenderMode::BedWithoutObjects) {
             if (write_limited(bed)) {
                 break;
             }
@@ -3144,12 +3189,65 @@ std::uint64_t render_object_stream(
     return writer->frames_written();
 }
 
+void write_object_bed_descriptor(
+    const std::filesystem::path& path,
+    const ChannelLayout& layout,
+    std::uint32_t sample_rate,
+    std::uint64_t frames,
+    bool overwrite) {
+    if (std::filesystem::exists(path) && !overwrite) {
+        throw std::runtime_error(
+            "object bed descriptor exists; pass --overwrite to replace it");
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("cannot open object bed descriptor");
+    }
+    output << "{\"type\":\"dtsx-object-viewer-bed\","
+           << "\"version\":1,"
+           << "\"kind\":\"multichannel_bed\","
+           << "\"audioFile\":\"bed.wav\","
+           << "\"containsObjects\":false,"
+           << "\"sampleRate\":" << sample_rate << ','
+           << "\"bitsPerSample\":24,"
+           << "\"frames\":" << frames << ','
+           << "\"layout\":\"" << layout.name << "\","
+           << "\"channels\":[";
+    for (std::size_t index = 0U;
+         index < layout.channels.size();
+         ++index) {
+        if (index != 0U) {
+            output << ',';
+        }
+        output << '"' << layout.channels[index] << '"';
+    }
+    output << "]}\n";
+}
+
 } // namespace
 
 int run_pipeline(const Options& requested_options) {
     Options options = requested_options;
     if (!std::filesystem::exists(options.input)) {
         throw std::runtime_error("input file does not exist");
+    }
+    if (options.objects_output_bed
+        && !options.objects_output_directory_explicit) {
+        throw std::runtime_error(
+            "--objects-output-bed requires --objects-output-dir");
+    }
+    if (options.objects_output_directory_explicit
+        && options.objects_output_directory.empty()) {
+        options.objects_output_directory = options.input.stem();
+    }
+    if (options.objects_output_directory_explicit
+        && !options.objects_output_directory.is_absolute()) {
+        const std::filesystem::path input_directory =
+            options.input.parent_path().empty()
+            ? std::filesystem::path(L".")
+            : options.input.parent_path();
+        options.objects_output_directory =
+            input_directory / options.objects_output_directory;
     }
     if (!supported_input_extension(options.input)) {
         throw std::runtime_error(
@@ -3159,11 +3257,6 @@ int run_pipeline(const Options& requested_options) {
         && !options.audio_track_explicit) {
         options.audio_track =
             select_default_dts_track(options);
-    }
-    if (options.coordinates_output_explicit
-        && !options.metadata_output_explicit) {
-        throw std::runtime_error(
-            "--coordinates-output requires --metadata-output");
     }
     const bool object_stems_only =
         options.objects_output_directory_explicit
@@ -3216,7 +3309,6 @@ int run_pipeline(const Options& requested_options) {
     const bool dts_uhd = input_is_dts_uhd(options);
     if (dts_uhd) {
         if (options.metadata_output_explicit
-            || options.coordinates_output_explicit
             || options.objects_output_directory_explicit) {
             throw std::runtime_error(
                 "DTS-UHD full channel-based mix does not expose "
@@ -3233,7 +3325,7 @@ int run_pipeline(const Options& requested_options) {
     }
     const ChannelCapacity capacity =
         inspect_channel_capacity(decode_options);
-    if (!layout && !object_stems_only) {
+    if (!layout && (!object_stems_only || options.objects_output_bed)) {
         layout = infer_metadata_layout(capacity);
         if (!layout) {
             throw std::runtime_error(
@@ -3276,7 +3368,45 @@ int run_pipeline(const Options& requested_options) {
         dump_metadata(decode_options, options.metadata_output);
     }
     if (options.objects_output_directory_explicit) {
-        export_object_stems(decode_options);
+        if (capacity.any_objects) {
+            export_object_stems(
+                decode_options,
+                !options.objects_output_bed);
+        } else {
+            std::cerr
+                << "warning: no dynamic objects found; skipping object WAV export\n";
+        }
+        if (options.objects_output_bed) {
+            if (!layout) {
+                throw std::runtime_error(
+                    "cannot infer layout for object bed output");
+            }
+            std::error_code directory_error;
+            std::filesystem::create_directories(
+                options.objects_output_directory,
+                directory_error);
+            if (directory_error) {
+                throw std::runtime_error(
+                    "cannot create object output directory: "
+                    + directory_error.message());
+            }
+            const std::filesystem::path bed_path =
+                options.objects_output_directory / L"bed.wav";
+            std::uint32_t bed_sample_rate = 0U;
+            const std::uint64_t bed_frames = render_object_stream(
+                decode_options,
+                *layout,
+                sample_rate,
+                bed_path,
+                RenderMode::BedWithoutObjects,
+                &bed_sample_rate);
+            write_object_bed_descriptor(
+                options.objects_output_directory / L"bed.json",
+                *layout,
+                bed_sample_rate,
+                bed_frames,
+                options.overwrite);
+        }
         if (object_stems_only) {
             return 0;
         }
