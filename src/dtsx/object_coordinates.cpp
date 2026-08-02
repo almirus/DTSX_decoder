@@ -11,7 +11,7 @@ RendererCoordinates decode_renderer_coordinates(std::int32_t azimuth_code,
     RendererCoordinates result;
     result.coordinate_system = 10U;
     result.azimuth_degrees = static_cast<float>(azimuth_code) * 0.5F;
-    result.elevation_degrees = -static_cast<float>(elevation_code) * 0.5F;
+    result.elevation_degrees = static_cast<float>(elevation_code) * 0.5F;
     // sub_5F12C treats the stored code 1 as the zero-distance sentinel;
     // all other stored codes are converted directly to 1/64 units.
     result.distance = distance_code == 1U

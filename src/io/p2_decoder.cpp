@@ -4,6 +4,7 @@
 #include "audio/layout.hpp"
 #include "dtsx/speaker_mask.hpp"
 #include "io/dts_frame_reader.hpp"
+#include "io/p2_resources.hpp"
 #include "io/wav_writer.hpp"
 
 #ifndef NOMINMAX
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -47,17 +49,133 @@ Function native_function(HMODULE module, std::uintptr_t rva) {
         reinterpret_cast<std::uintptr_t>(module) + rva);
 }
 
-std::filesystem::path executable_directory() {
-    std::vector<wchar_t> path(32768U);
-    const DWORD length = GetModuleFileNameW(
-        nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (length == 0U || length == path.size()) {
-        throw std::runtime_error(
-            "cannot determine decoder executable directory");
+struct EmbeddedRuntimeFile final {
+    int resource_id;
+    const wchar_t* file_name;
+};
+
+constexpr std::array<EmbeddedRuntimeFile, 5> kEmbeddedRuntimeFiles{{
+    {IDR_P2_DTSX_DECODER, L"DTSXDecoder.dll"},
+    {IDR_P2_MSVCP140_APP, L"MSVCP140_APP.dll"},
+    {IDR_P2_VCCORLIB140_APP, L"VCCORLIB140_APP.dll"},
+    {IDR_P2_VCRUNTIME140_1_APP, L"VCRUNTIME140_1_APP.dll"},
+    {IDR_P2_VCRUNTIME140_APP, L"VCRUNTIME140_APP.dll"},
+}};
+
+class EmbeddedP2Runtime final {
+public:
+    EmbeddedP2Runtime() {
+        create_directory();
+        try {
+            for (const EmbeddedRuntimeFile& file :
+                 kEmbeddedRuntimeFiles) {
+                extract(file);
+            }
+        } catch (...) {
+            cleanup();
+            throw;
+        }
     }
-    return std::filesystem::path(
-        std::wstring(path.data(), length)).parent_path();
-}
+
+    ~EmbeddedP2Runtime() {
+        cleanup();
+    }
+
+    EmbeddedP2Runtime(const EmbeddedP2Runtime&) = delete;
+    EmbeddedP2Runtime& operator=(const EmbeddedP2Runtime&) = delete;
+
+    [[nodiscard]] std::filesystem::path decoder_path() const {
+        return directory_ / L"DTSXDecoder.dll";
+    }
+
+private:
+    void create_directory() {
+        std::array<wchar_t, 32768> temporary_path{};
+        const DWORD length = GetTempPathW(
+            static_cast<DWORD>(temporary_path.size()),
+            temporary_path.data());
+        if (length == 0U || length >= temporary_path.size()) {
+            throw std::runtime_error(
+                "cannot determine temporary directory for P2 runtime");
+        }
+        const std::filesystem::path root(
+            std::wstring(temporary_path.data(), length));
+        const DWORD process_id = GetCurrentProcessId();
+        const ULONGLONG seed = GetTickCount64();
+        for (unsigned attempt = 0U; attempt < 128U; ++attempt) {
+            directory_ = root /
+                (L"dtsx-decode-p2-"
+                 + std::to_wstring(process_id)
+                 + L"-"
+                 + std::to_wstring(seed + attempt));
+            if (CreateDirectoryW(directory_.c_str(), nullptr) != 0) {
+                return;
+            }
+            if (GetLastError() != ERROR_ALREADY_EXISTS) {
+                throw std::runtime_error(
+                    "cannot create temporary P2 runtime directory, "
+                    "Windows error "
+                    + std::to_string(GetLastError()));
+            }
+        }
+        throw std::runtime_error(
+            "cannot allocate a unique temporary P2 runtime directory");
+    }
+
+    void extract(const EmbeddedRuntimeFile& file) const {
+        const HMODULE executable = GetModuleHandleW(nullptr);
+        const HRSRC resource = FindResourceW(
+            executable,
+            MAKEINTRESOURCEW(file.resource_id),
+            MAKEINTRESOURCEW(10));
+        if (resource == nullptr) {
+            throw std::runtime_error(
+                "embedded P2 runtime resource is missing, Windows error "
+                + std::to_string(GetLastError()));
+        }
+        const DWORD size = SizeofResource(executable, resource);
+        const HGLOBAL loaded = LoadResource(executable, resource);
+        const void* data = loaded != nullptr
+            ? LockResource(loaded)
+            : nullptr;
+        if (size == 0U || data == nullptr) {
+            throw std::runtime_error(
+                "cannot read embedded P2 runtime resource, Windows error "
+                + std::to_string(GetLastError()));
+        }
+        const std::filesystem::path output_path =
+            directory_ / file.file_name;
+        std::ofstream output(
+            output_path,
+            std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error(
+                "cannot create temporary P2 runtime file");
+        }
+        output.write(
+            static_cast<const char*>(data),
+            static_cast<std::streamsize>(size));
+        if (!output) {
+            throw std::runtime_error(
+                "cannot write temporary P2 runtime file");
+        }
+    }
+
+    void cleanup() noexcept {
+        if (directory_.empty()) {
+            return;
+        }
+        for (const EmbeddedRuntimeFile& file : kEmbeddedRuntimeFiles) {
+            const std::filesystem::path path =
+                directory_ / file.file_name;
+            DeleteFileW(path.c_str());
+        }
+        RemoveDirectoryW(directory_.c_str());
+        directory_.clear();
+    }
+
+    std::filesystem::path directory_;
+};
 
 bool is_elementary_dts(const std::filesystem::path& path) {
     std::wstring extension = path.extension().wstring();
@@ -164,66 +282,71 @@ static_assert(offsetof(NativeOutputRecord, channels) == 24U);
 class NativeP2Decoder final {
 public:
     explicit NativeP2Decoder(std::uint32_t output_activity_mask) {
-        const std::filesystem::path dll =
-            executable_directory() / L"DTSXDecoder.dll";
-        module_ = LoadLibraryW(dll.c_str());
-        if (module_ == nullptr) {
-            throw std::runtime_error(
-                "cannot load 64-bit DTSXDecoder.dll, Windows error "
-                + std::to_string(GetLastError()));
-        }
-        get_size_ =
-            native_function<NativeGetSize>(module_, kGetSizeRva);
-        create_ =
-            native_function<NativeCreate>(module_, kCreateRva);
-        decode_ =
-            native_function<NativeDecode>(module_, kDecodeRva);
-        set_parameter_ =
-            native_function<NativeSetParameter>(
-                module_, kSetParameterRva);
-        destroy_ =
-            native_function<NativeDestroy>(module_, kDestroyRva);
+        try {
+            const std::filesystem::path dll =
+                runtime_.decoder_path();
+            module_ = LoadLibraryExW(
+                dll.c_str(),
+                nullptr,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                    | LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (module_ == nullptr) {
+                throw std::runtime_error(
+                    "cannot load embedded 64-bit DTSXDecoder.dll, "
+                    "Windows error "
+                    + std::to_string(GetLastError()));
+            }
+            get_size_ =
+                native_function<NativeGetSize>(module_, kGetSizeRva);
+            create_ =
+                native_function<NativeCreate>(module_, kCreateRva);
+            decode_ =
+                native_function<NativeDecode>(module_, kDecodeRva);
+            set_parameter_ =
+                native_function<NativeSetParameter>(
+                    module_, kSetParameterRva);
+            destroy_ =
+                native_function<NativeDestroy>(module_, kDestroyRva);
 
-        memory_.resize(get_size_(5) + 8U);
-        const int created =
-            create_(&decoder_, 5, memory_.data());
-        if (created < 0 || decoder_ == nullptr) {
-            throw std::runtime_error(
-                "native P2 decoder creation failed: "
-                + std::to_string(created));
-        }
-        unsigned mask = output_activity_mask;
-        const int configured =
-            set_parameter_(decoder_, 102, &mask, sizeof(mask));
-        if (configured < 0) {
-            throw std::runtime_error(
-                "native P2 speaker configuration failed: "
-                + std::to_string(configured));
-        }
-        unsigned mode = 0U;
-        const int output_mode =
-            set_parameter_(decoder_, 100, &mode, sizeof(mode));
-        if (output_mode < 0) {
-            throw std::runtime_error(
-                "native P2 output mode configuration failed: "
-                + std::to_string(output_mode));
-        }
-        const int decode_mode =
-            set_parameter_(decoder_, 106, &mode, sizeof(mode));
-        if (decode_mode < 0) {
-            throw std::runtime_error(
-                "native P2 decode mode configuration failed: "
-                + std::to_string(decode_mode));
+            memory_.resize(get_size_(5) + 8U);
+            const int created =
+                create_(&decoder_, 5, memory_.data());
+            if (created < 0 || decoder_ == nullptr) {
+                throw std::runtime_error(
+                    "native P2 decoder creation failed: "
+                    + std::to_string(created));
+            }
+            unsigned mask = output_activity_mask;
+            const int configured =
+                set_parameter_(decoder_, 102, &mask, sizeof(mask));
+            if (configured < 0) {
+                throw std::runtime_error(
+                    "native P2 speaker configuration failed: "
+                    + std::to_string(configured));
+            }
+            unsigned mode = 0U;
+            const int output_mode =
+                set_parameter_(decoder_, 100, &mode, sizeof(mode));
+            if (output_mode < 0) {
+                throw std::runtime_error(
+                    "native P2 output mode configuration failed: "
+                    + std::to_string(output_mode));
+            }
+            const int decode_mode =
+                set_parameter_(decoder_, 106, &mode, sizeof(mode));
+            if (decode_mode < 0) {
+                throw std::runtime_error(
+                    "native P2 decode mode configuration failed: "
+                    + std::to_string(decode_mode));
+            }
+        } catch (...) {
+            release();
+            throw;
         }
     }
 
     ~NativeP2Decoder() {
-        if (decoder_ != nullptr && destroy_ != nullptr) {
-            destroy_(decoder_);
-        }
-        if (module_ != nullptr) {
-            FreeLibrary(module_);
-        }
+        release();
     }
 
     NativeP2Decoder(const NativeP2Decoder&) = delete;
@@ -293,6 +416,18 @@ public:
     }
 
 private:
+    void release() noexcept {
+        if (decoder_ != nullptr && destroy_ != nullptr) {
+            destroy_(decoder_);
+            decoder_ = nullptr;
+        }
+        if (module_ != nullptr) {
+            FreeLibrary(module_);
+            module_ = nullptr;
+        }
+    }
+
+    EmbeddedP2Runtime runtime_;
     HMODULE module_ = nullptr;
     NativeGetSize get_size_ = nullptr;
     NativeCreate create_ = nullptr;
