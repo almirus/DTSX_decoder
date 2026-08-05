@@ -463,12 +463,15 @@ void decode_p2_stream(
     if (options.layout.empty()) {
         throw std::runtime_error("--layout is required for P2 decode");
     }
-    const std::optional<ChannelLayout> layout =
+    std::optional<ChannelLayout> layout =
         find_layout(options.layout);
     if (!layout) {
         throw std::runtime_error(
             "unsupported --layout; supported: "
             + supported_layouts_text());
+    }
+    if (options.dolby_output) {
+        layout = dolby_ordered_layout(*layout);
     }
     if (options.render_mode == RenderMode::ObjectsOnly) {
         throw std::runtime_error(
@@ -484,6 +487,7 @@ void decode_p2_stream(
     progress.update("decode P2", size_error ? -1 : 0);
     dtsx::ElementaryFrame frame;
     std::unique_ptr<WavWriter> writer;
+    std::unique_ptr<MonoTrackWriter> mono_writer;
     std::vector<std::vector<std::int32_t>> planar;
     std::uint32_t sample_rate = 0U;
     std::uint64_t access_unit_count = 0U;
@@ -501,7 +505,19 @@ void decode_p2_stream(
             sample_rate);
         if (writer == nullptr) {
             writer = std::make_unique<WavWriter>(
-                output, *layout, sample_rate, options.overwrite);
+                output,
+                *layout,
+                sample_rate,
+                options.overwrite,
+                options.output_format,
+                options.dolby_output);
+            if (options.mono_tracks) {
+                mono_writer = std::make_unique<MonoTrackWriter>(
+                    options.mono_tracks_directory,
+                    *layout,
+                    sample_rate,
+                    options.overwrite);
+            }
         }
         const std::uint64_t frame_limit =
             duration_frame_limit(options, sample_rate);
@@ -514,6 +530,10 @@ void decode_p2_stream(
                     remaining,
                     planar.empty() ? 0U : planar.front().size()));
         writer->write_planar_24(planar, frames_to_write);
+        if (mono_writer != nullptr) {
+            mono_writer->write_planar_24(
+                planar, frames_to_write);
+        }
         encoded_byte_count += frame.bytes.size();
         if (!size_error && elementary_size != 0U) {
             progress.update(
@@ -534,6 +554,9 @@ void decode_p2_stream(
             "P2 decoder produced no PCM frames");
     }
     writer->close();
+    if (mono_writer != nullptr) {
+        mono_writer->close();
+    }
     progress.done("decode P2");
     std::cerr << "Frames: " << writer->frames_written() << '\n';
     std::cerr << "P2 access units: " << access_unit_count << '\n';

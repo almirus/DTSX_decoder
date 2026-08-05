@@ -162,6 +162,31 @@ bool standard_speaker_coordinates(
     return false;
 }
 
+bool standard_speaker_name(
+    std::uint32_t speaker_mask,
+    std::string_view& name) noexcept {
+    float azimuth_degrees = 0.0F;
+    float elevation_degrees = 0.0F;
+    if (standard_speaker_coordinates(
+            speaker_mask,
+            azimuth_degrees,
+            elevation_degrees,
+            name)) {
+        return true;
+    }
+
+    // DTS-HD Master Audio Suite
+    // L_C_R_Ls_Rs_Cs_Oh_Configurator identifies physical speaker bit 19 as
+    // DTS_CHCFG_TOP_CENTER_SRRD.  The encoder calls this channel "Oh".
+    if (speaker_mask == (1U << 19U)) {
+        name = "Oh";
+        return true;
+    }
+
+    name = {};
+    return false;
+}
+
 bool standard_speaker_mask(
     std::string_view name,
     std::uint32_t& speaker_mask) noexcept {

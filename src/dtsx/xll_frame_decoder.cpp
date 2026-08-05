@@ -1,5 +1,6 @@
 #include "dtsx/xll_frame_decoder.hpp"
 
+#include "bitstream/dtsx_word_buffer.hpp"
 #include "dtsx/crc16.hpp"
 #include "dtsx/speaker_mask.hpp"
 
@@ -7,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace dtsx {
@@ -655,6 +657,11 @@ bool XllFrameDecoder::decode_msb_frame(
     // dtsxXLLDecodeChannelSet, 0xbb20c, 0xb4384, and 0xb8fc4.
     frame = {};
     last_error_.clear();
+    std::vector<XllSupplementalChannelSet>
+        effective_supplemental_channel_sets =
+            supplemental_channel_sets;
+    std::unique_ptr<bitstream::WordBuffer>
+        standard_xll_x_words;
     if (!unpack_xll_common_header(source, frame.common)) {
         last_error_ = "common header";
         return false;
@@ -673,19 +680,23 @@ bool XllFrameDecoder::decode_msb_frame(
         raw_channel_set_count);
     frame.channel_sets.clear();
     frame.channel_sets.reserve(
-        raw_channel_set_count + supplemental_channel_sets.size());
+        raw_channel_set_count
+        + effective_supplemental_channel_sets.size() + 1U);
     std::vector<std::uint8_t> raw_band_counts;
     raw_band_counts.reserve(raw_channel_set_count);
     std::vector<std::uint8_t> active_raw_channel_set_indices;
     active_raw_channel_set_indices.reserve(
-        raw_channel_set_count + supplemental_channel_sets.size());
+        raw_channel_set_count
+        + effective_supplemental_channel_sets.size() + 1U);
     std::vector<std::size_t> active_navigation_indices;
     active_navigation_indices.reserve(
-        raw_channel_set_count + supplemental_channel_sets.size());
+        raw_channel_set_count
+        + effective_supplemental_channel_sets.size() + 1U);
     std::vector<std::vector<std::uint32_t>>
         lossy_reference_speaker_masks_by_set;
     lossy_reference_speaker_masks_by_set.reserve(
-        raw_channel_set_count + supplemental_channel_sets.size());
+        raw_channel_set_count
+        + effective_supplemental_channel_sets.size() + 1U);
     std::uint32_t preceding_hierarchy_channels = 0U;
     for (std::size_t channel_set_index = 0U;
          channel_set_index < raw_channel_sets.size();
@@ -769,7 +780,7 @@ bool XllFrameDecoder::decode_msb_frame(
     }
     std::vector<bitstream::Cursor> audio_data_starts;
     audio_data_starts.reserve(
-        1U + supplemental_channel_sets.size());
+        2U + effective_supplemental_channel_sets.size());
     audio_data_starts.push_back(audio_data_start);
 
     const std::uint64_t payload_bytes =
@@ -793,6 +804,7 @@ bool XllFrameDecoder::decode_msb_frame(
         frame.extension.present =
             frame.extension.sync_word == 0x02000850U
             || frame.extension.sync_word == 0xF14000D1U
+            || frame.extension.sync_word == 0xF14000D3U
             || frame.extension.sync_word == 0xF14000D4U
             || frame.extension.sync_word == 0xF14000D0U;
         const std::size_t extension_bytes =
@@ -813,13 +825,136 @@ bool XllFrameDecoder::decode_msb_frame(
         }
     }
 
+    // The standard 0x02000850 DTS:X envelope is followed by an 18-byte
+    // wrapper and then an ordinary, independently coded four-channel XLL
+    // channel set.  It inherits the main XLL segment geometry.  Prefer the
+    // private type-69 navigation supplied by libdtsx metadata when present;
+    // otherwise validate and decode the inline channel set directly.
+    if (effective_supplemental_channel_sets.empty()
+        && frame.extension.present
+        && frame.extension.sync_word == 0x02000850U
+        && frame.extension.payload.size() > 18U) {
+        standard_xll_x_words =
+            std::make_unique<bitstream::WordBuffer>(
+                frame.extension.payload, false);
+        bitstream::Cursor supplemental_source =
+            standard_xll_x_words->cursor();
+        supplemental_source.fast_forward(18 * 8);
+        bitstream::Cursor probe_source = supplemental_source;
+        XllChannelSetProbe probe;
+        const bool valid_header =
+            probe_xll_channel_set_header(
+                probe_source,
+                false,
+                probe,
+                frame.common.channel_set_count,
+                frame.common.legacy_sync)
+            && probe.channel_count == 4U
+            && probe.channel_mask == 0x0FU
+            && probe.frequency_band_count == 1U
+            && !frame.channel_sets.empty()
+            && probe.sample_rate
+                   == frame.channel_sets.front().probe.sample_rate;
+        XllNavigationTable probe_navigation;
+        const bool valid_navigation =
+            valid_header
+            && unpack_xll_navigation_table(
+                probe_source,
+                frame.common.segment_size_bits,
+                frame.common.segments_per_frame,
+                {probe.frequency_band_count},
+                probe_navigation);
+        std::uint64_t supplemental_audio_bytes = 0U;
+        if (valid_navigation) {
+            for (const XllNavigationEntry& entry :
+                 probe_navigation.entries) {
+                supplemental_audio_bytes =
+                    std::max<std::uint64_t>(
+                        supplemental_audio_bytes,
+                        static_cast<std::uint64_t>(
+                            entry.byte_offset)
+                            + entry.size_bytes);
+            }
+        }
+        const std::uint64_t remaining_bytes =
+            probe_source.remaining_bits() / 8U;
+        if (valid_navigation
+            && supplemental_audio_bytes <= remaining_bytes
+            && remaining_bytes - supplemental_audio_bytes <= 5U) {
+            XllSupplementalChannelSet supplemental{
+                supplemental_source};
+            static constexpr std::array<std::uint32_t, 4>
+                kHeightSpeakers = {
+                    1U << 13U, 1U << 15U,
+                    1U << 23U, 1U << 24U};
+            static constexpr std::array<std::uint32_t, 4>
+                kFoldedBedSpeakers = {
+                    1U << 1U, 1U << 2U,
+                    1U << 7U, 1U << 8U};
+            std::vector<std::uint32_t> hierarchy_speakers;
+            hierarchy_speakers.reserve(preceding_hierarchy_channels);
+            for (std::size_t set = 0U;
+                 set < frame.channel_sets.size();
+                 ++set) {
+                if (!frame.channel_sets[set]
+                         .hierarchical_channel_set) {
+                    continue;
+                }
+                hierarchy_speakers.insert(
+                    hierarchy_speakers.end(),
+                    lossy_reference_speaker_masks_by_set[set]
+                        .begin(),
+                    lossy_reference_speaker_masks_by_set[set]
+                        .end());
+            }
+            if (hierarchy_speakers.size()
+                == preceding_hierarchy_channels) {
+                std::uint32_t height_mask = 0U;
+                for (const std::uint32_t speaker :
+                     kHeightSpeakers) {
+                    height_mask |= speaker;
+                }
+                supplemental.speaker_activity_mask =
+                    speaker_mask_to_activity_mask(height_mask);
+                supplemental.reference_speaker_masks =
+                    hierarchy_speakers;
+                supplemental.lossy_reference_speaker_masks.assign(
+                    kHeightSpeakers.size(), 0U);
+                supplemental.downmix_coefficients.assign(
+                    hierarchy_speakers.size()
+                        * kHeightSpeakers.size(),
+                    0);
+                for (std::size_t reference = 0U;
+                     reference < hierarchy_speakers.size();
+                     ++reference) {
+                    for (std::size_t height = 0U;
+                         height < kHeightSpeakers.size();
+                         ++height) {
+                        if (hierarchy_speakers[reference]
+                            == kFoldedBedSpeakers[height]) {
+                            supplemental.downmix_coefficients[
+                                reference * kHeightSpeakers.size()
+                                + height] = 23170;
+                        }
+                    }
+                }
+            }
+            effective_supplemental_channel_sets.push_back(
+                std::move(supplemental));
+        } else {
+            standard_xll_x_words.reset();
+        }
+    }
+
     frame.supplemental_navigation.reserve(
-        supplemental_channel_sets.size());
+        effective_supplemental_channel_sets.size());
     for (std::size_t supplemental_index = 0U;
-         supplemental_index < supplemental_channel_sets.size();
+         supplemental_index
+             < effective_supplemental_channel_sets.size();
          ++supplemental_index) {
         bitstream::Cursor supplemental_source =
-            supplemental_channel_sets[supplemental_index].source;
+            effective_supplemental_channel_sets[
+                supplemental_index].source;
         XllChannelSetHeader supplemental_header;
         const std::size_t raw_header_index =
             raw_channel_sets.size();
@@ -837,7 +972,8 @@ bool XllFrameDecoder::decode_msb_frame(
                 0U,
                 previous_header)) {
             bitstream::Cursor probe_source =
-                supplemental_channel_sets[supplemental_index].source;
+                effective_supplemental_channel_sets[
+                    supplemental_index].source;
             XllChannelSetProbe probe;
             const bool probed =
                 probe_xll_channel_set_header(
@@ -846,7 +982,7 @@ bool XllFrameDecoder::decode_msb_frame(
                     probe,
                     static_cast<std::uint8_t>(
                         frame.common.channel_set_count
-                        + supplemental_channel_sets.size()),
+                        + effective_supplemental_channel_sets.size()),
                     frame.common.legacy_sync);
             frame = {};
             last_error_ = "supplemental channel-set header "
@@ -865,7 +1001,8 @@ bool XllFrameDecoder::decode_msb_frame(
             return false;
         }
         const XllSupplementalChannelSet& supplemental =
-            supplemental_channel_sets[supplemental_index];
+            effective_supplemental_channel_sets[
+                supplemental_index];
         const std::vector<std::uint32_t> supplemental_speakers =
             expand_speaker_activity_mask(
                 supplemental.speaker_activity_mask);
@@ -1037,6 +1174,24 @@ bool XllFrameDecoder::decode_msb_frame(
             frame.main_planar_channel_count +=
                 frame.channel_sets[channel_set]
                     .probe.channel_count;
+            continue;
+        }
+        const XllChannelSetHeader& supplemental =
+            frame.channel_sets[channel_set];
+        if (supplemental.channel_mask_enabled) {
+            for (std::uint32_t bit = 0U; bit < 32U; ++bit) {
+                const std::uint32_t speaker = 1U << bit;
+                if ((supplemental.speaker_channel_mask & speaker)
+                    != 0U) {
+                    frame.supplemental_speaker_masks.push_back(
+                        speaker);
+                }
+            }
+        } else {
+            frame.supplemental_speaker_masks.insert(
+                frame.supplemental_speaker_masks.end(),
+                supplemental.probe.channel_count,
+                0U);
         }
     }
     auto next_channel_decoders = channel_decoders_;

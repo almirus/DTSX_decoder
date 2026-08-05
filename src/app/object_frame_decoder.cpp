@@ -764,6 +764,10 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                                      .added_speaker_masks.size()
                     ? combined_mix.added_speaker_masks[
                           supplemental_channel]
+                    : supplemental_channel
+                              < xll.supplemental_speaker_masks.size()
+                    ? xll.supplemental_speaker_masks[
+                          supplemental_channel]
                     : 0U);
                 decoded.waveform_source_activity_masks.push_back(
                     decoded.bed_speaker_activity_mask);

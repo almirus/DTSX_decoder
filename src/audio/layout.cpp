@@ -1,8 +1,12 @@
 #include "layout.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <sstream>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace dtsx_decode {
 namespace {
@@ -96,6 +100,65 @@ std::string join_channel_names(const ChannelLayout& layout) {
         out << layout.channels[i];
     }
     return out.str();
+}
+
+ChannelLayout dolby_ordered_layout(const ChannelLayout& layout) {
+    if (layout.name != "7.1"
+        && layout.name != "7.1.2"
+        && layout.name != "7.1.4") {
+        throw std::invalid_argument(
+            "--dolby-output supports only 7.1, 7.1.2 and 7.1.4 layouts");
+    }
+
+    static constexpr std::array<std::string_view, 12U> kDolbyOrder = {{
+        "FL", "FR", "FC", "LFE",
+        "SL", "SR", "BL", "BR",
+        "TFL", "TFR", "TBL", "TBR",
+    }};
+    ChannelLayout result = layout;
+    result.channels.clear();
+    result.channels.reserve(layout.channels.size());
+    for (const std::string_view name : kDolbyOrder) {
+        const auto found = std::find(
+            layout.channels.begin(), layout.channels.end(), name);
+        if (found != layout.channels.end()) {
+            result.channels.push_back(*found);
+        }
+    }
+    for (const std::string& name : layout.channels) {
+        if (std::find(
+                result.channels.begin(), result.channels.end(), name)
+            == result.channels.end()) {
+            result.channels.push_back(name);
+        }
+    }
+    return result;
+}
+
+std::uint32_t wave_mask_for_channel(
+    std::string_view channel) noexcept {
+    static constexpr std::array<
+        std::pair<std::string_view, std::uint32_t>, 12U>
+        kWaveMasks = {{
+            {"FL", 0x00000001U},
+            {"FR", 0x00000002U},
+            {"FC", 0x00000004U},
+            {"LFE", 0x00000008U},
+            {"BL", 0x00000010U},
+            {"BR", 0x00000020U},
+            {"SL", 0x00000200U},
+            {"SR", 0x00000400U},
+            {"TFL", 0x00001000U},
+            {"TFR", 0x00004000U},
+            {"TBL", 0x00008000U},
+            {"TBR", 0x00020000U},
+        }};
+    for (const auto& entry : kWaveMasks) {
+        if (entry.first == channel) {
+            return entry.second;
+        }
+    }
+    return 0U;
 }
 
 } // namespace dtsx_decode

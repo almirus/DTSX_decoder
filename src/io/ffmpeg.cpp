@@ -3,6 +3,11 @@
 #include <stdexcept>
 #include <vector>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 namespace dtsx_decode {
 namespace {
 
@@ -10,7 +15,59 @@ std::wstring unsigned_text(unsigned value) {
     return std::to_wstring(value);
 }
 
+std::filesystem::path find_ffmpeg_in_path() {
+    const DWORD path_length =
+        GetEnvironmentVariableW(L"PATH", nullptr, 0U);
+    if (path_length == 0U) {
+        throw std::runtime_error(
+            "ffmpeg.exe was not found: PATH is empty");
+    }
+    std::vector<wchar_t> path_value(path_length);
+    if (GetEnvironmentVariableW(
+            L"PATH", path_value.data(), path_length) == 0U) {
+        throw std::runtime_error(
+            "cannot read PATH while locating ffmpeg.exe");
+    }
+
+    const DWORD executable_length = SearchPathW(
+        path_value.data(),
+        L"ffmpeg.exe",
+        nullptr,
+        0U,
+        nullptr,
+        nullptr);
+    if (executable_length == 0U) {
+        throw std::runtime_error(
+            "ffmpeg.exe was not found in PATH; install FFmpeg and add "
+            "its bin directory to PATH");
+    }
+    std::vector<wchar_t> executable(executable_length + 1U);
+    const DWORD copied = SearchPathW(
+        path_value.data(),
+        L"ffmpeg.exe",
+        nullptr,
+        static_cast<DWORD>(executable.size()),
+        executable.data(),
+        nullptr);
+    if (copied == 0U || copied >= executable.size()) {
+        throw std::runtime_error(
+            "cannot resolve ffmpeg.exe from PATH");
+    }
+    return std::filesystem::path(
+        std::wstring(executable.data(), copied));
+}
+
 } // namespace
+
+const std::filesystem::path& ffmpeg_executable() {
+    static const std::filesystem::path executable =
+        find_ffmpeg_in_path();
+    return executable;
+}
+
+void require_ffmpeg_in_path() {
+    (void)ffmpeg_executable();
+}
 
 FfmpegDtsReader::FfmpegDtsReader(const Options& options) {
     std::vector<std::wstring> arguments = {
@@ -47,7 +104,7 @@ FfmpegDtsReader::FfmpegDtsReader(const Options& options) {
         L"pipe:1",
     });
     process_ = std::make_unique<ProcessReader>(
-        options.ffmpeg, arguments, options.verbose);
+        ffmpeg_executable(), arguments, options.verbose);
 }
 
 std::size_t FfmpegDtsReader::read(void* destination, std::size_t capacity) {

@@ -23,6 +23,10 @@ expand_speaker_activity_mask(std::uint32_t mask);
     float& elevation_degrees,
     std::string_view& name) noexcept;
 
+[[nodiscard]] bool standard_speaker_name(
+    std::uint32_t speaker_mask,
+    std::string_view& name) noexcept;
+
 [[nodiscard]] bool standard_speaker_mask(
     std::string_view name,
     std::uint32_t& speaker_mask) noexcept;

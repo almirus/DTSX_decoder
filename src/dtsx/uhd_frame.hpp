@@ -29,7 +29,9 @@ struct UhdFrameHeader final {
     std::uint32_t clock_rate = 0U;
     std::uint32_t sample_rate = 0U;
     std::uint32_t samples_per_channel = 0U;
+    std::uint32_t channel_layout_index = 0U;
     std::uint32_t speaker_activity_mask = 0U;
+    bool type1_certified_content = false;
     std::vector<UhdChunk> metadata_chunks;
     std::vector<UhdChunk> audio_chunks;
 };

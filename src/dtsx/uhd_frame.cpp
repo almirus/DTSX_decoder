@@ -218,6 +218,7 @@ bool parse_uhd_full_mix_metadata(
         && !source.read(4U, mask_index)) {
         return false;
     }
+    header.channel_layout_index = mask_index;
     static constexpr std::array<std::uint32_t, 14> kLayoutMasks = {
         0x00000001U,
         0x00000002U,
@@ -247,6 +248,15 @@ bool parse_uhd_full_mix_metadata(
     } else {
         return false;
     }
+    // DTS-UHD Profile 2 T1 certified content. MediaInfoLib's
+    // File_DtsUhd::ExtractObjectInfo applies the same Table 7-21 rule:
+    // an explicitly coded 16-bit layout (index 14) with one of the three
+    // certified channel activity masks identifies IMAX Enhanced content.
+    header.type1_certified_content =
+        mask_index == 14U
+        && (header.speaker_activity_mask == 0x0000000FU
+            || header.speaker_activity_mask == 0x0000002FU
+            || header.speaker_activity_mask == 0x0000802FU);
     return source.valid() && header.speaker_activity_mask != 0U;
 }
 

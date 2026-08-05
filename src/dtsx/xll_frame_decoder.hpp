@@ -54,6 +54,7 @@ struct XllDecodedFrame final {
     std::vector<XllChannelSetHeader> channel_sets;
     XllNavigationTable navigation;
     std::vector<XllNavigationTable> supplemental_navigation;
+    std::vector<std::uint32_t> supplemental_speaker_masks;
     XllExtension extension;
     std::vector<std::vector<std::int32_t>> planar_channels;
     std::vector<XllEmbeddedDownmixOutput> embedded_downmix_outputs;

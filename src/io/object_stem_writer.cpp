@@ -107,9 +107,8 @@ bool ObjectStemWriter::write(
         timeline_end_,
         sample_position + duration_samples);
     if (frame.objects.empty()) {
-        // Bed and supplemental channels without an object metadata block are
-        // not object stems.  Keeping them here would expose the coded bed as
-        // object_000_waveform_* in --objects-output-dir.
+        // Waveform decoders can start before their object metadata. Wait for
+        // the metadata block so only the referenced channels are exported.
         return true;
     }
     for (std::size_t object_index = 0;

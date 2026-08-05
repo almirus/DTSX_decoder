@@ -1,5 +1,7 @@
 #include "options.hpp"
 
+#include "app_version.hpp"
+#include "progress.hpp"
 #include "../audio/layout.hpp"
 
 #include <iostream>
@@ -134,6 +136,22 @@ Options parse_options(int argc, wchar_t** argv) {
         } else if (arg == L"-o" || arg == L"--output") {
             options.output = require_value(argc, argv, i, "--output");
             options.output_explicit = true;
+        } else if (arg == L"--output-format") {
+            const std::string format = narrow_ascii(
+                require_value(argc, argv, i, "--output-format"),
+                "--output-format");
+            if (format == "wav") {
+                options.output_format = OutputFormat::Wav;
+            } else if (format == "w64") {
+                options.output_format = OutputFormat::Wave64;
+            } else {
+                throw std::runtime_error(
+                    "--output-format must be wav or w64");
+            }
+        } else if (arg == L"--mono-tracks") {
+            options.mono_tracks = true;
+        } else if (arg == L"--dolby-output") {
+            options.dolby_output = true;
         } else if (arg == L"--metadata-output") {
             options.metadata_output = require_value(
                 argc, argv, i, "--metadata-output");
@@ -146,8 +164,6 @@ Options parse_options(int argc, wchar_t** argv) {
             options.objects_output_directory_explicit = true;
         } else if (arg == L"--objects-output-bed") {
             options.objects_output_bed = true;
-        } else if (arg == L"--ffmpeg") {
-            options.ffmpeg = require_value(argc, argv, i, "--ffmpeg");
         } else if (arg == L"--layout") {
             options.layout = narrow_ascii(require_value(argc, argv, i, "--layout"), "--layout");
         } else if (arg == L"--channels") {
@@ -207,12 +223,25 @@ std::uint64_t duration_frame_limit(
 
 void print_help() {
     std::cout
-        << "dtsx-decode - DTS:X object decoder/render pipeline\n\n"
-        << "Usage:\n"
+        << "dtsx-decode " << kVersion
+        << " - DTS:X object decoder/render pipeline\n"
+        << "Author: " << kAuthor << '\n';
+    const bool color = console_style::color_enabled(stdout);
+    std::cout << "Поддержать автора:  ";
+    console_style::paint(std::cout, color, console_style::bold);
+    console_style::paint(
+        std::cout, color, console_style::bright_magenta);
+    std::cout << "2200 7009 5155 4582";
+    console_style::reset(std::cout, color);
+    std::cout
+        << "\n\nUsage:\n"
         << "  dtsx-decode -i INPUT [options]\n\n"
         << "Options:\n"
         << "  -i, --input PATH       Input .mkv, .mp4, .m2ts, .dts or .dtshd\n"
-        << "  -o, --output PATH      Output PCM24 WAV\n"
+        << "  -o, --output PATH      Output PCM24 file\n"
+        << "      --output-format FORMAT  wav or w64; default wav\n"
+        << "      --mono-tracks      Write named mono WAVs to an INPUT_STEM folder\n"
+        << "      --dolby-output     Dolby order for 7.1.x; omit WAVEFORMATEXTENSIBLE\n"
         << "      --metadata-output PATH  Write parsed DTS:X metadata JSONL\n"
         << "      --objects-output-dir PATH  Write per-object waveform WAV and coordinates\n"
         << "      --objects-output-bed      Write multichannel bed.wav and bed.json\n"
@@ -222,7 +251,6 @@ void print_help() {
         << "      --sample-rate HZ   Output sample rate\n"
         << "      --duration TIME    Decode only this duration: 10s, 10m, 1h2m5s\n"
         << "      --render MODE      objects, objects-only or bed; default objects\n"
-        << "      --ffmpeg PATH      ffmpeg executable for container demux only\n"
         << "      --overwrite        Replace existing output\n"
         << "  -v, --verbose          Detailed diagnostics\n"
         << "      --version          Print version\n"

@@ -10,6 +10,9 @@
 
 namespace dtsx_decode {
 
+void require_ffmpeg_in_path();
+[[nodiscard]] const std::filesystem::path& ffmpeg_executable();
+
 struct AudioProbe {
     unsigned stream_index = 0;
     std::string codec_name;
