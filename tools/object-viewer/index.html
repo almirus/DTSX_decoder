@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DTS:X Object Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">DTS:X OBJECT MONITOR</p>
+        <h1>Пространство объектов</h1>
+      </div>
+      <div class="folder-actions">
+        <span id="folderName" class="folder-name">Папка не выбрана</span>
+        <button id="openFolder" class="button button-primary">Открыть папку</button>
+        <label class="button button-primary fallback-picker">
+          Открыть папку
+          <input id="folderFallback" type="file" webkitdirectory multiple>
+        </label>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="sidebar panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">МИКШЕР</p>
+            <h2>Объекты</h2>
+          </div>
+          <div class="heading-controls">
+            <span id="objectCount" class="count-badge">0</span>
+            <button id="objectsMaster" class="object-toggle on"
+                    disabled aria-label="Выключить все объекты"
+                    aria-pressed="true"></button>
+          </div>
+        </div>
+        <details class="object-settings">
+          <summary>Настройки объектов</summary>
+          <div class="settings-body">
+            <label class="setting-toggle">
+              <span>Хвост движения</span>
+              <input id="objectTrails" type="checkbox" checked>
+            </label>
+            <label class="setting-slider" for="objectTrailLength">
+              <span>Длина хвоста</span>
+              <input id="objectTrailLength" type="range" min="0.1" max="1.2" step="0.05" value="0.35">
+              <output id="objectTrailLengthValue">0.35 с</output>
+            </label>
+            <label class="setting-toggle">
+              <span>Масштаб по глубине</span>
+              <input id="objectDepthScale" type="checkbox" checked>
+            </label>
+            <label class="setting-toggle">
+              <span>Линии к центру</span>
+              <input id="objectGuideLines" type="checkbox" checked>
+            </label>
+            <label class="setting-toggle">
+              <span>BED/Height названия</span>
+              <input id="bedSpeakers" type="checkbox" checked>
+            </label>
+          </div>
+        </details>
+        <div id="objectList" class="object-list">
+          <div class="empty-list">Выберите папку, созданную параметром<br><code>--objects-output-dir</code></div>
+        </div>
+        <div class="master-row">
+          <label for="masterVolume">MASTER</label>
+          <input id="masterVolume" type="range" min="0" max="1" step="0.01" value="0.85">
+          <output id="masterVolumeValue">85%</output>
+        </div>
+      </aside>
+
+      <section class="scene-panel panel">
+        <canvas id="scene" aria-label="Трёхмерная сцена объектов"></canvas>
+        <div class="scene-overlay scene-help">ЛКМ — вращение · колесо — масштаб</div>
+        <div class="scene-overlay axis-legend">
+          <span><i class="axis-x"></i>X вправо</span>
+          <span><i class="axis-y"></i>Y вверх</span>
+          <span><i class="axis-z"></i>Z вперёд</span>
+        </div>
+        <div id="sceneStatus" class="scene-status">
+          <strong>Откройте папку объектов</strong>
+          <span>WAV и JSONL будут сопоставлены автоматически</span>
+        </div>
+      </section>
+    </section>
+
+    <footer class="transport panel">
+      <button id="playPause" class="play-button" disabled aria-label="Воспроизвести">
+        <span id="playIcon">▶</span>
+      </button>
+      <span id="currentTime" class="timecode">00:00.000</span>
+      <input id="timeline" class="timeline" type="range" min="0" max="1" step="0.001" value="0" disabled>
+      <span id="duration" class="timecode">00:00.000</span>
+      <button id="stop" class="button button-ghost" disabled>Стоп</button>
+      <label class="loop-toggle">
+        <input id="loop" type="checkbox">
+        <span>Зациклить</span>
+      </label>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
