@@ -12,6 +12,8 @@ namespace dtsx_decode {
 
 void require_ffmpeg_in_path();
 [[nodiscard]] const std::filesystem::path& ffmpeg_executable();
+[[nodiscard]] std::uint64_t ffmpeg_input_duration_milliseconds(
+    const Options& options);
 
 struct AudioProbe {
     unsigned stream_index = 0;
@@ -25,7 +27,10 @@ struct AudioProbe {
 
 class FfmpegDtsReader {
 public:
-    explicit FfmpegDtsReader(const Options& options);
+    explicit FfmpegDtsReader(
+        const Options& options,
+        std::uint64_t start_milliseconds = 0U,
+        std::uint64_t duration_milliseconds = 0U);
 
     std::size_t read(void* destination, std::size_t capacity);
     void finish();

@@ -55,7 +55,8 @@ std::wstring command_line(const std::filesystem::path& executable,
 
 ProcessReader::ProcessReader(const std::filesystem::path& executable,
     const std::vector<std::wstring>& arguments,
-    bool verbose) {
+    bool verbose,
+    bool merge_stderr) {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES security{};
     security.nLength = sizeof(security);
@@ -76,7 +77,9 @@ ProcessReader::ProcessReader(const std::filesystem::path& executable,
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdOutput = stdout_write;
-    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    startup.hStdError = merge_stderr
+        ? stdout_write
+        : GetStdHandle(STD_ERROR_HANDLE);
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
 
     PROCESS_INFORMATION process_info{};
@@ -109,6 +112,7 @@ ProcessReader::ProcessReader(const std::filesystem::path& executable,
     (void)executable;
     (void)arguments;
     (void)verbose;
+    (void)merge_stderr;
     throw std::runtime_error("ProcessReader is currently implemented for Windows only");
 #endif
 }

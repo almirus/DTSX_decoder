@@ -26,6 +26,7 @@
 #include "../io/object_stem_writer.hpp"
 #include "../io/p2_decoder.hpp"
 #include "../render/object_audio_renderer.hpp"
+#include "../render/object_gain.hpp"
 #include "../render/parma_layout.hpp"
 
 #include <array>
@@ -324,15 +325,46 @@ struct ChannelCapacity final {
     std::uint32_t coded_bed_speakers = 0U;
     std::uint32_t reference_speakers = 0U;
     std::uint32_t supplemental_speakers = 0U;
+    std::uint32_t maximum_supplemental_channels = 0U;
+    std::uint32_t sampled_windows = 0U;
     bool any_objects = false;
     bool any_waveforms = false;
     bool dynamic_objects = false;
 };
 
-ChannelCapacity inspect_channel_capacity(const Options& options) {
-    constexpr std::uint32_t kExtensionFrames = 16U;
-    constexpr std::uint32_t kMaximumFrames = 256U;
-    DtsFrameReader reader(options);
+void merge_channel_capacity(
+    ChannelCapacity& destination,
+    const ChannelCapacity& source) noexcept {
+    destination.physical_speakers |= source.physical_speakers;
+    destination.coded_bed_speakers |= source.coded_bed_speakers;
+    destination.reference_speakers |= source.reference_speakers;
+    destination.supplemental_speakers |= source.supplemental_speakers;
+    destination.maximum_supplemental_channels = (std::max)(
+        destination.maximum_supplemental_channels,
+        source.maximum_supplemental_channels);
+    destination.any_objects =
+        destination.any_objects || source.any_objects;
+    destination.any_waveforms =
+        destination.any_waveforms || source.any_waveforms;
+    destination.dynamic_objects =
+        destination.dynamic_objects || source.dynamic_objects;
+}
+
+ChannelCapacity inspect_channel_capacity_window(
+    const Options& options,
+    std::uint64_t elementary_byte_offset,
+    std::uint64_t container_start_milliseconds,
+    std::uint64_t container_duration_milliseconds,
+    bool extended_window) {
+    const std::uint32_t extension_frame_limit =
+        extended_window ? 2816U : 16U;
+    const std::uint32_t frame_limit =
+        extended_window ? 8192U : 256U;
+    DtsFrameReader reader(
+        options,
+        elementary_byte_offset,
+        container_start_milliseconds,
+        container_duration_milliseconds);
     ObjectFrameDecoder object_decoder;
     DcaBedDecoder bed_decoder;
     dtsx::UhdFrameParserState uhd_state;
@@ -340,7 +372,7 @@ ChannelCapacity inspect_channel_capacity(const Options& options) {
     dtsx::ElementaryFrame frame;
     std::uint32_t frames = 0U;
     std::uint32_t extension_frames = 0U;
-    while (frames++ < kMaximumFrames && reader.read(frame)) {
+    while (frames++ < frame_limit && reader.read(frame)) {
         if (frame.packing == dtsx::StreamPacking::DtsUhd) {
             dtsx::UhdFrameHeader header;
             if (dtsx::parse_uhd_frame_header(
@@ -404,6 +436,18 @@ ChannelCapacity inspect_channel_capacity(const Options& options) {
                     decoded.metadata_speaker_activity_mask,
                     capacity.reference_speakers);
             }
+            if (decoded.supplemental_speaker_activity_mask != 0U) {
+                add_activity_speakers(
+                    decoded.supplemental_speaker_activity_mask,
+                    capacity.physical_speakers);
+                add_activity_speakers(
+                    decoded.supplemental_speaker_activity_mask,
+                    capacity.supplemental_speakers);
+                capacity.maximum_supplemental_channels = (std::max)(
+                    capacity.maximum_supplemental_channels,
+                    dtsx::speaker_count_from_activity_mask(
+                        decoded.supplemental_speaker_activity_mask));
+            }
             for (const dtsx::XllHierarchicalDownmixOutput& downmix :
                  decoded.bed_downmix_outputs) {
                 for (const std::uint32_t speaker :
@@ -411,26 +455,116 @@ ChannelCapacity inspect_channel_capacity(const Options& options) {
                     capacity.physical_speakers |= speaker;
                 }
             }
+            std::uint32_t supplemental_channels = 0U;
             for (std::size_t waveform = 0U;
                  waveform < decoded.waveform_speaker_masks.size()
                  && waveform
                         < decoded.waveform_is_supplemental.size();
                  ++waveform) {
                 if (decoded.waveform_is_supplemental[waveform]) {
+                    ++supplemental_channels;
                     capacity.physical_speakers |=
                         decoded.waveform_speaker_masks[waveform];
                     capacity.supplemental_speakers |=
                         decoded.waveform_speaker_masks[waveform];
                 }
             }
+            capacity.maximum_supplemental_channels = (std::max)(
+                capacity.maximum_supplemental_channels,
+                supplemental_channels);
             if (!decoded.objects.empty()) {
                 capacity.any_objects = true;
                 capacity.dynamic_objects = true;
             }
         }
-        if (extension_frames >= kExtensionFrames) {
+        if (extension_frames >= extension_frame_limit) {
             break;
         }
+    }
+    reader.finish();
+    return capacity;
+}
+
+ChannelCapacity inspect_channel_capacity(
+    const Options& options,
+    bool distributed) {
+    constexpr std::size_t kWindowCount = 5U;
+    constexpr std::uint64_t kTailWindowBytes = 16U * 1024U * 1024U;
+    constexpr std::uint64_t kContainerWindowMilliseconds = 30000U;
+    constexpr std::array<std::uint32_t, kWindowCount>
+        kPositionNumerators = {{0U, 1U, 1U, 1U, 1U}};
+    constexpr std::array<std::uint32_t, kWindowCount>
+        kPositionDenominators = {{1U, 32U, 4U, 2U, 1U}};
+
+    if (!distributed) {
+        ChannelCapacity capacity = inspect_channel_capacity_window(
+            options, 0U, 0U, 0U, false);
+        capacity.sampled_windows = 1U;
+        return capacity;
+    }
+
+    ChannelCapacity capacity;
+    if (is_elementary_dts(options.input)) {
+        std::error_code size_error;
+        const std::uint64_t size =
+            std::filesystem::file_size(options.input, size_error);
+        if (size_error) {
+            throw std::runtime_error(
+                "cannot determine DTS elementary stream size: "
+                + size_error.message());
+        }
+        const std::uint64_t tail_window =
+            (std::min)(size, kTailWindowBytes);
+        const std::uint64_t span = size - tail_window;
+        std::uint64_t previous_offset =
+            (std::numeric_limits<std::uint64_t>::max)();
+        for (std::size_t index = 0U; index < kWindowCount; ++index) {
+            const std::uint64_t offset = span
+                * kPositionNumerators[index]
+                / kPositionDenominators[index];
+            if (offset == previous_offset) {
+                continue;
+            }
+            merge_channel_capacity(
+                capacity,
+                inspect_channel_capacity_window(
+                    options, offset, 0U, 0U, true));
+            ++capacity.sampled_windows;
+            previous_offset = offset;
+        }
+        return capacity;
+    }
+
+    const std::uint64_t duration =
+        ffmpeg_input_duration_milliseconds(options);
+    if (duration == 0U) {
+        capacity = inspect_channel_capacity_window(
+            options,
+            0U,
+            0U,
+            kContainerWindowMilliseconds,
+            true);
+        capacity.sampled_windows = 1U;
+        return capacity;
+    }
+    const std::uint64_t window =
+        (std::min)(duration, kContainerWindowMilliseconds);
+    const std::uint64_t span = duration - window;
+    std::uint64_t previous_start =
+        (std::numeric_limits<std::uint64_t>::max)();
+    for (std::size_t index = 0U; index < kWindowCount; ++index) {
+        const std::uint64_t start = span
+            * kPositionNumerators[index]
+            / kPositionDenominators[index];
+        if (start == previous_start) {
+            continue;
+        }
+        merge_channel_capacity(
+            capacity,
+            inspect_channel_capacity_window(
+                options, 0U, start, window, true));
+        ++capacity.sampled_windows;
+        previous_start = start;
     }
     return capacity;
 }
@@ -873,6 +1007,9 @@ void run_internal_probe(
 
     ProgressReporter progress;
     progress.update("probe", -1);
+    const ChannelCapacity sampled_capacity = options.full_probe
+        ? ChannelCapacity{}
+        : inspect_channel_capacity(options, true);
     DtsFrameReader reader(options);
     const bool probe_is_demuxer_bounded = reader.container_input();
     ObjectFrameDecoder object_decoder;
@@ -891,6 +1028,8 @@ void run_internal_probe(
     std::uint64_t malformed_object_frame_count = 0U;
     std::uint64_t xll_pbr_fallback_frame_count = 0U;
     std::uint32_t maximum_supplemental_xll_channels = 0U;
+    std::uint64_t supplemental_activity_total_samples = 0U;
+    std::uint64_t supplemental_activity_active_samples = 0U;
     std::uint64_t metadata_chunk_count = 0U;
     std::uint64_t metadata_body_parse_failure_count = 0U;
     std::uint64_t raw_metadata_envelope_count = 0U;
@@ -1184,6 +1323,35 @@ void run_internal_probe(
                         maximum_supplemental_xll_channels,
                         supplemental_channels);
             }
+            if (decoded.samples_per_channel != 0U) {
+                supplemental_activity_total_samples +=
+                    decoded.samples_per_channel;
+                bool supplemental_active = false;
+                for (std::size_t waveform = 0U;
+                     waveform < decoded.waveform_channels.size()
+                     && waveform
+                            < decoded.waveform_is_supplemental.size();
+                     ++waveform) {
+                    if (!decoded.waveform_is_supplemental[waveform]) {
+                        continue;
+                    }
+                    const auto& samples =
+                        decoded.waveform_channels[waveform];
+                    if (std::any_of(
+                            samples.begin(),
+                            samples.end(),
+                            [](std::int32_t sample) {
+                                return sample != 0;
+                            })) {
+                        supplemental_active = true;
+                        break;
+                    }
+                }
+                if (supplemental_active) {
+                    supplemental_activity_active_samples +=
+                        decoded.samples_per_channel;
+                }
+            }
             if (decoded.sample_rate != 0U) {
                 if (detected_stream_sample_rate == 0U) {
                     detected_stream_sample_rate = decoded.sample_rate;
@@ -1202,6 +1370,14 @@ void run_internal_probe(
             if (decoded.metadata_speaker_activity_mask != 0U) {
                 detected_metadata_activity_mask =
                     decoded.metadata_speaker_activity_mask;
+            }
+            if (decoded.supplemental_speaker_activity_mask != 0U) {
+                detected_supplemental_activity_mask |=
+                    decoded.supplemental_speaker_activity_mask;
+                maximum_supplemental_xll_channels = (std::max)(
+                    maximum_supplemental_xll_channels,
+                    dtsx::speaker_count_from_activity_mask(
+                        decoded.supplemental_speaker_activity_mask));
             }
             for (std::size_t waveform = 0U;
                  waveform < decoded.waveform_is_supplemental.size()
@@ -1296,6 +1472,21 @@ void run_internal_probe(
                 break;
             }
         }
+    }
+
+    if (!options.full_probe) {
+        detected_bed_activity_mask |=
+            dtsx::speaker_mask_to_activity_mask(
+                sampled_capacity.coded_bed_speakers);
+        detected_metadata_activity_mask |=
+            dtsx::speaker_mask_to_activity_mask(
+                sampled_capacity.reference_speakers);
+        detected_supplemental_activity_mask |=
+            dtsx::speaker_mask_to_activity_mask(
+                sampled_capacity.supplemental_speakers);
+        maximum_supplemental_xll_channels = (std::max)(
+            maximum_supplemental_xll_channels,
+            sampled_capacity.maximum_supplemental_channels);
     }
 
     progress.done("probe");
@@ -1480,6 +1671,11 @@ void run_internal_probe(
             ? "Scanned duration"
             : "Quick probe window",
         format_probe_duration(scanned_samples, sample_rate));
+    if (!options.full_probe) {
+        print_probe_field(
+            "Layout scan windows",
+            sampled_capacity.sampled_windows);
+    }
     print_probe_field("Scanned frames", frame_count);
     if (detected_frame_duration != 0U) {
         print_probe_field(
@@ -1504,9 +1700,30 @@ void run_internal_probe(
             probe_hex(detected_metadata_activity_mask));
     }
     if (maximum_supplemental_xll_channels != 0U) {
+        std::ostringstream supplemental_summary;
+        supplemental_summary
+            << maximum_supplemental_xll_channels;
+        if (options.full_probe
+            && supplemental_activity_total_samples != 0U) {
+            const long double activity_percent =
+                100.0L
+                * static_cast<long double>(
+                    supplemental_activity_active_samples)
+                / static_cast<long double>(
+                    supplemental_activity_total_samples);
+            supplemental_summary << " (active frames "
+                                 << std::fixed
+                                 << std::setprecision(
+                                        activity_percent < 0.01L
+                                            ? 4
+                                            : activity_percent < 1.0L
+                                            ? 2
+                                            : 1)
+                                 << activity_percent << "%)";
+        }
         print_probe_field(
             "Supplemental XLL channels",
-            maximum_supplemental_xll_channels);
+            supplemental_summary.str());
         print_probe_field(
             "Supplemental layout",
             detected_supplemental_activity_mask != 0U
@@ -2486,7 +2703,28 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
                                                         object.preamble
                                                             .metadata_mode,
                                                         point)),
-                                        std::nullopt);
+                                        std::nullopt,
+                                        ObjectMetadataGain{
+                                            object.spatial_header.gain_present,
+                                            object.spatial_header.gain_present
+                                                ? object.spatial_header.gain_code
+                                                : static_cast<std::uint8_t>(61U),
+                                            object.spatial_header.gain_present
+                                                ? object.spatial_header.gain_exponent
+                                                : static_cast<std::uint8_t>(0U),
+                                            decoded_coordinates
+                                                .presentation_gain_code,
+                                            decode_object_source_gain_q23(
+                                                object.spatial_header.gain_present
+                                                    ? object.spatial_header.gain_code
+                                                    : static_cast<std::uint8_t>(61U),
+                                                object.spatial_header.gain_present
+                                                    ? object.spatial_header.gain_exponent
+                                                    : static_cast<std::uint8_t>(0U),
+                                                point.gain_code,
+                                                decode_object_presentation_gain_q23(
+                                                    decoded_coordinates
+                                                        .presentation_gain_code))});
                                 }
                             }
                         } else {
@@ -3406,13 +3644,25 @@ int run_pipeline(const Options& requested_options) {
 
     Options decode_options = options;
     ScopedTemporaryFile elementary_file;
+    const bool distributed_capacity_scan =
+        !layout || options.objects_output_directory_explicit;
+    ChannelCapacity capacity;
+    bool capacity_scanned = false;
+    if (!is_elementary_dts(options.input)
+        && distributed_capacity_scan) {
+        capacity = inspect_channel_capacity(options, true);
+        capacity_scanned = true;
+    }
     if (!is_elementary_dts(options.input)) {
         elementary_file.set(temporary_elementary_path());
         demux_container(options, elementary_file.path());
         decode_options.input = elementary_file.path();
     }
-    const ChannelCapacity capacity =
-        inspect_channel_capacity(decode_options);
+    if (!capacity_scanned) {
+        capacity = inspect_channel_capacity(
+            decode_options,
+            distributed_capacity_scan);
+    }
     if (!layout && (!object_stems_only || options.objects_output_bed)) {
         layout = infer_metadata_layout(capacity);
         if (!layout) {

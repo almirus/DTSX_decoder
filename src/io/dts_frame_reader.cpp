@@ -23,15 +23,31 @@ bool is_elementary_dts(const std::filesystem::path& path) {
 
 } // namespace
 
-DtsFrameReader::DtsFrameReader(const Options& options)
+DtsFrameReader::DtsFrameReader(
+    const Options& options,
+    std::uint64_t elementary_byte_offset,
+    std::uint64_t container_start_milliseconds,
+    std::uint64_t container_duration_milliseconds)
     : assembler_(dtsx::SyncAlignment::AnyByte) {
     if (is_elementary_dts(options.input)) {
         elementary_stream_.open(options.input, std::ios::binary);
         if (!elementary_stream_) {
             throw std::runtime_error("cannot open DTS elementary stream");
         }
+        if (elementary_byte_offset != 0U) {
+            elementary_stream_.seekg(
+                static_cast<std::streamoff>(elementary_byte_offset),
+                std::ios::beg);
+            if (!elementary_stream_) {
+                throw std::runtime_error(
+                    "cannot seek DTS elementary stream");
+            }
+        }
     } else {
-        demuxer_ = std::make_unique<FfmpegDtsReader>(options);
+        demuxer_ = std::make_unique<FfmpegDtsReader>(
+            options,
+            container_start_milliseconds,
+            container_duration_milliseconds);
     }
 }
 
@@ -81,6 +97,15 @@ bool DtsFrameReader::read(dtsx::ElementaryFrame& frame) {
         } else {
             saw_input_bytes_ = true;
         }
+    }
+}
+
+void DtsFrameReader::finish() {
+    if (demuxer_ == nullptr || finished_) {
+        return;
+    }
+    dtsx::ElementaryFrame ignored;
+    while (read(ignored)) {
     }
 }
 

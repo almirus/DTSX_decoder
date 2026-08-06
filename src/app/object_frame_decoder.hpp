@@ -35,6 +35,7 @@ struct DecodedObjectAudioFrame final {
     std::uint32_t bed_speaker_activity_mask = 0;
     std::vector<std::uint32_t> waveform_base_by_id;
     std::uint32_t metadata_speaker_activity_mask = 0;
+    std::uint32_t supplemental_speaker_activity_mask = 0;
     bool alternative_presentation_gain_present = false;
     std::uint8_t alternative_presentation_gain_code = 61;
     std::uint8_t presentation_gain_code = 61;

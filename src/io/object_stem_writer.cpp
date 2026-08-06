@@ -3,6 +3,7 @@
 #include "audio/layout.hpp"
 #include "dtsx/object_waveform_map.hpp"
 #include "dtsx/speaker_mask.hpp"
+#include "render/object_gain.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -35,6 +36,28 @@ std::uint32_t peak_absolute_sample(
         peak = std::max(peak, magnitude);
     }
     return peak;
+}
+
+ObjectMetadataGain object_metadata_gain(
+    const DecodedObjectAudioFrame& frame,
+    const dtsx::ObjectMetadataBlock& object,
+    const dtsx::PointSourceMetadata& point) noexcept {
+    ObjectMetadataGain gain;
+    gain.object_gain_present = object.spatial_header.gain_present;
+    gain.object_gain_code = object.spatial_header.gain_present
+        ? object.spatial_header.gain_code
+        : static_cast<std::uint8_t>(61U);
+    gain.object_gain_exponent = object.spatial_header.gain_present
+        ? object.spatial_header.gain_exponent
+        : static_cast<std::uint8_t>(0U);
+    gain.presentation_gain_code = frame.presentation_gain_code;
+    gain.effective_gain_q23 = decode_object_source_gain_q23(
+        gain.object_gain_code,
+        gain.object_gain_exponent,
+        point.gain_code,
+        decode_object_presentation_gain_q23(
+            gain.presentation_gain_code));
+    return gain;
 }
 
 } // namespace
@@ -144,7 +167,8 @@ bool ObjectStemWriter::write(
                         object.preamble.metadata_mode,
                         dtsx::point_source_is_renderable(
                             object.preamble.metadata_mode, point),
-                        std::nullopt);
+                        std::nullopt,
+                        object_metadata_gain(frame, object, point));
                     wrote_coordinates = true;
                 }
                 if (!wrote_coordinates) {
@@ -185,7 +209,8 @@ bool ObjectStemWriter::write(
                         object.preamble.metadata_mode,
                         dtsx::point_source_is_renderable(
                             object.preamble.metadata_mode, point),
-                        std::nullopt);
+                        std::nullopt,
+                        object_metadata_gain(frame, object, point));
                     wrote_coordinates = true;
                 }
                 if (!wrote_coordinates) {
@@ -239,7 +264,8 @@ bool ObjectStemWriter::write(
                         object.preamble.metadata_mode,
                         dtsx::point_source_is_renderable(
                             object.preamble.metadata_mode, point),
-                        peak_sample);
+                        peak_sample,
+                        object_metadata_gain(frame, object, point));
                     wrote_metadata = true;
                 }
             }

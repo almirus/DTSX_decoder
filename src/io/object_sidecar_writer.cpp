@@ -2,6 +2,7 @@
 
 #include "dtsx/speaker_mask.hpp"
 
+#include <cmath>
 #include <iomanip>
 #include <stdexcept>
 
@@ -29,7 +30,8 @@ void ObjectSidecarWriter::write(
     const dtsx::PointSourceMetadata& point,
     std::uint8_t metadata_mode,
     bool renderable,
-    std::optional<std::uint32_t> peak_sample) {
+    std::optional<std::uint32_t> peak_sample,
+    const ObjectMetadataGain& metadata_gain) {
     if (closed_) {
         throw std::runtime_error("object coordinate sidecar is closed");
     }
@@ -60,6 +62,30 @@ void ObjectSidecarWriter::write(
     output_ << ",\"snapToNearestSpeaker\":"
             << (point.snap_to_nearest_speaker ? "true" : "false")
             << ",\"gainCode\":" << static_cast<unsigned>(point.gain_code)
+            << ",\"objectGainPresent\":"
+            << (metadata_gain.object_gain_present ? "true" : "false")
+            << ",\"objectGainCode\":"
+            << static_cast<unsigned>(metadata_gain.object_gain_code)
+            << ",\"objectGainExponent\":"
+            << static_cast<unsigned>(metadata_gain.object_gain_exponent)
+            << ",\"presentationGainCode\":"
+            << static_cast<unsigned>(
+                   metadata_gain.presentation_gain_code)
+            << ",\"metadataGainQ23\":"
+            << metadata_gain.effective_gain_q23
+            << ",\"metadataGainLinear\":"
+            << static_cast<double>(metadata_gain.effective_gain_q23)
+                   / 8388608.0;
+    if (metadata_gain.effective_gain_q23 > 0) {
+        output_ << ",\"metadataGainDb\":"
+                << 20.0 * std::log10(
+                       static_cast<double>(
+                           metadata_gain.effective_gain_q23)
+                       / 8388608.0);
+    } else {
+        output_ << ",\"metadataGainDb\":null";
+    }
+    output_
             << ",\"widthDeg\":" << point.width_degrees
             << ",\"heightDeg\":" << point.height_degrees
             << ",\"rotationDeg\":" << point.rotation_degrees

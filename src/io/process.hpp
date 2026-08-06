@@ -18,7 +18,8 @@ class ProcessReader {
 public:
     ProcessReader(const std::filesystem::path& executable,
         const std::vector<std::wstring>& arguments,
-        bool verbose);
+        bool verbose,
+        bool merge_stderr = false);
     ~ProcessReader();
 
     ProcessReader(const ProcessReader&) = delete;

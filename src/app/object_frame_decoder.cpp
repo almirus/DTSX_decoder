@@ -373,6 +373,10 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                         asset.asset_index];
                 combined_mix_available = true;
             }
+            if (combined_mix_available) {
+                decoded.supplemental_speaker_activity_mask |=
+                    combined_mix.added_speaker_activity_mask;
+            }
             for (std::size_t associated_index = 0U;
                  associated_index
                      < asset.xll_associated_chunk_types.size();
