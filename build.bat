@@ -28,6 +28,7 @@ if errorlevel 1 exit /b 1
 if not exist "bin\Release" mkdir "bin\Release"
 if not exist "bin\obj\dtsx-decode" mkdir "bin\obj\dtsx-decode"
 if not exist "bin\obj\dcadec" mkdir "bin\obj\dcadec"
+del /q "bin\obj\dtsx-decode\*.obj" "bin\obj\dcadec\*.obj" 2>nul
 
 for %%F in (
   "bin\win\x64\DTSXDecoder.dll"
@@ -88,6 +89,67 @@ cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   src\render\parma_blind_renderer.cpp ^
   src\render\object_gain.cpp src\render\object_audio_renderer.cpp ^
   src\render\object_mixer.cpp src\render\vector_base_panner.cpp ^
+  /c /Fo:"bin\obj\dtsx-decode\\"
+if errorlevel 1 exit /b 1
+
+cl /nologo ^
+  bin\obj\dtsx-decode\main.obj ^
+  bin\obj\dtsx-decode\object_frame_decoder.obj ^
+  bin\obj\dtsx-decode\options.obj ^
+  bin\obj\dtsx-decode\pipeline.obj ^
+  bin\obj\dtsx-decode\dca_bed_decoder.obj ^
+  bin\obj\dtsx-decode\layout.obj ^
+  bin\obj\dtsx-decode\dtsx_bitstream.obj ^
+  bin\obj\dtsx-decode\dtsx_segment.obj ^
+  bin\obj\dtsx-decode\dtsx_word_buffer.obj ^
+  bin\obj\dtsx-decode\crc16.obj ^
+  bin\obj\dtsx-decode\core_substream.obj ^
+  bin\obj\dtsx-decode\descriptor_metadata.obj ^
+  bin\obj\dtsx-decode\exss_header.obj ^
+  bin\obj\dtsx-decode\exss_asset.obj ^
+  bin\obj\dtsx-decode\frame_assembler.obj ^
+  bin\obj\dtsx-decode\frame_header.obj ^
+  bin\obj\dtsx-decode\frame_sync.obj ^
+  bin\obj\dtsx-decode\uhd_frame.obj ^
+  bin\obj\dtsx-decode\lbr_chunk.obj ^
+  bin\obj\dtsx-decode\raw_info.obj ^
+  bin\obj\dtsx-decode\metadata_chunk.obj ^
+  bin\obj\dtsx-decode\object_metadata_block.obj ^
+  bin\obj\dtsx-decode\object_metadata_header.obj ^
+  bin\obj\dtsx-decode\object_metadata_updates.obj ^
+  bin\obj\dtsx-decode\object_coordinates.obj ^
+  bin\obj\dtsx-decode\object_spatial_metadata.obj ^
+  bin\obj\dtsx-decode\object_waveform_map.obj ^
+  bin\obj\dtsx-decode\preliminary_metadata.obj ^
+  bin\obj\dtsx-decode\speaker_mask.obj ^
+  bin\obj\dtsx-decode\xll_channel_set.obj ^
+  bin\obj\dtsx-decode\xll_channel_parameters.obj ^
+  bin\obj\dtsx-decode\xll_channel_decoder.obj ^
+  bin\obj\dtsx-decode\xll_common_header.obj ^
+  bin\obj\dtsx-decode\xll_entropy.obj ^
+  bin\obj\dtsx-decode\xll_frame_decoder.obj ^
+  bin\obj\dtsx-decode\xll_navigation.obj ^
+  bin\obj\dtsx-decode\xll_prediction.obj ^
+  bin\obj\dtsx-decode\dts_frame_reader.obj ^
+  bin\obj\dtsx-decode\ffmpeg.obj ^
+  bin\obj\dtsx-decode\object_sidecar_writer.obj ^
+  bin\obj\dtsx-decode\object_stem_writer.obj ^
+  bin\obj\dtsx-decode\process.obj ^
+  bin\obj\dtsx-decode\wav_writer.obj ^
+  bin\obj\dtsx-decode\p2_decoder.obj ^
+  bin\obj\dtsx-decode\gain_interpolator.obj ^
+  bin\obj\dtsx-decode\layout_panner.obj ^
+  bin\obj\dtsx-decode\parma_layout.obj ^
+  bin\obj\dtsx-decode\parma_blind_config.obj ^
+  bin\obj\dtsx-decode\parma_pairwise.obj ^
+  bin\obj\dtsx-decode\parma_pairwise_analysis.obj ^
+  bin\obj\dtsx-decode\parma_critical_bands.obj ^
+  bin\obj\dtsx-decode\parma_filterbank.obj ^
+  bin\obj\dtsx-decode\parma_blind_renderer.obj ^
+  bin\obj\dtsx-decode\object_gain.obj ^
+  bin\obj\dtsx-decode\object_audio_renderer.obj ^
+  bin\obj\dtsx-decode\object_mixer.obj ^
+  bin\obj\dtsx-decode\vector_base_panner.obj ^
   bin\obj\dcadec\bitstream.obj bin\obj\dcadec\core_decoder.obj ^
   bin\obj\dcadec\dca_context.obj bin\obj\dcadec\dmix_tables.obj ^
   bin\obj\dcadec\exss_parser.obj bin\obj\dcadec\idct_fixed.obj ^
@@ -97,7 +159,7 @@ cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   bin\obj\dcadec\lbr_decoder.obj bin\obj\dcadec\ta.obj ^
   bin\obj\dcadec\xll_decoder.obj ^
   bin\obj\dtsx-decode\p2_resources.res ^
-  /Fo:"bin\obj\dtsx-decode\\" /Fe:"bin\Release\dtsx-decode.exe"
+  /Fe:"bin\Release\dtsx-decode.exe"
 if errorlevel 1 exit /b 1
 
 echo Build: bin\Release\dtsx-decode.exe
