@@ -2408,6 +2408,18 @@ void run_internal_probe(
             +
             raw_metadata_crc_failure_bytes
             + metadata_body_failure_declared_bytes;
+        const bool has_unresolved_data =
+            rejected_metadata_bytes != 0U
+            || malformed_object_frame_bytes != 0U
+            || xll_pbr_fallback_frame_bytes != 0U
+            || raw_metadata_crc_failure_bytes != 0U
+            || raw_metadata_envelope_failure_bytes != 0U
+            || metadata_body_failure_declared_bytes != 0U
+            || ignored_unmapped_object_occurrences != 0U
+            || frames_with_ignored_unmapped_objects != 0U
+            || unmapped_missing_waveform_occurrences != 0U
+            || unmapped_channel_out_of_range_occurrences != 0U;
+        if (has_unresolved_data) {
         print_probe_section("Unresolved data", color);
         print_probe_field(
             "Rejected metadata bytes",
@@ -2486,6 +2498,7 @@ void run_internal_probe(
         print_probe_field(
             "Unparsed waveform bytes",
             "not separately measurable; XLL frame failures are counted above");
+        }
     }
 
     const std::uint64_t probe_failures =
