@@ -210,16 +210,16 @@ void parma_repan_pairwise_channel(
     for (std::size_t bin = 0U; bin < count; ++bin) {
         first_target_real[bin] =
             sine[bin] * first_target_real[bin]
-            - first_source_real[bin] * cosine[bin];
+            - second_source_real[bin] * cosine[bin];
         first_target_imaginary[bin] =
             sine[bin] * first_target_imaginary[bin]
-            - first_source_imaginary[bin] * cosine[bin];
+            - second_source_imaginary[bin] * cosine[bin];
         second_target_real[bin] =
             sine[count + bin] * second_target_real[bin]
-            - second_source_real[bin] * cosine[count + bin];
+            - first_source_real[bin] * cosine[count + bin];
         second_target_imaginary[bin] =
             sine[count + bin] * second_target_imaginary[bin]
-            - second_source_imaginary[bin] * cosine[count + bin];
+            - first_source_imaginary[bin] * cosine[count + bin];
     }
 }
 

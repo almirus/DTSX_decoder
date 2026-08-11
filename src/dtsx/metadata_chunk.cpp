@@ -72,8 +72,8 @@ bool unpack_metadata_chunk_payload(
     }
     bitstream::Cursor element_source = source;
     std::uint32_t element_offset = 0U;
-    envelope.elements.reserve(element_sizes.size());
-    for (const std::uint8_t size : element_sizes) {
+    envelope.elements.reserve(envelope.element_sizes.size());
+    for (const std::uint8_t size : envelope.element_sizes) {
         bitstream::Cursor preliminary_source = element_source;
         const PreliminaryMetadataHeader preliminary =
             unpack_preliminary_metadata_header(

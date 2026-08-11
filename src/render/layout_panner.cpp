@@ -54,25 +54,58 @@ float dot(
     return left.x * right.x + left.y * right.y + left.z * right.z;
 }
 
-bool is_hull_face(
+bool make_native_hull_triplet(
     const std::vector<PannerVector>& points,
+    const std::vector<std::uint32_t>& destinations,
     std::size_t first,
     std::size_t second,
-    std::size_t third) noexcept {
-    const PannerVector normal = cross(
-        subtract(points[second], points[first]),
-        subtract(points[third], points[first]));
-    bool positive = false;
-    bool negative = false;
+    std::size_t third,
+    PannerTriplet& triplet) noexcept {
+    // libdtsx.so: dts_3d_hull_f32_t_initialize/sub_E7714.  Native does
+    // not use the ordinary Cartesian convex-hull plane test.  A candidate
+    // loudspeaker triplet must stay in one elevation hemisphere and every
+    // relevant point, expressed in that triplet basis, must have a
+    // coefficient sum no greater than 1 + the configured hull epsilon.
+    constexpr float kHullEpsilon = 1.0e-7F;
+    const std::array<PannerVector, 3U> speakers = {
+        points[first], points[second], points[third]};
+    const bool upper = std::all_of(
+        speakers.begin(), speakers.end(), [=](const PannerVector& point) {
+            return point.y >= -kHullEpsilon;
+        });
+    const bool lower = std::all_of(
+        speakers.begin(), speakers.end(), [=](const PannerVector& point) {
+            return point.y <= kHullEpsilon;
+        });
+    if (!upper && !lower) {
+        return false;
+    }
+    const float determinant_value = dot(
+        speakers[0U], cross(speakers[1U], speakers[2U]));
+    if (std::fabs(determinant_value) <= kHullEpsilon
+        || !make_panner_triplet(
+            speakers,
+            {destinations[first], destinations[second],
+             destinations[third]},
+            triplet)) {
+        return false;
+    }
+    const bool strictly_upper = upper && !lower;
+    const bool strictly_lower = lower && !upper;
     for (std::size_t index = 0; index < points.size(); ++index) {
-        if (index == first || index == second || index == third) {
+        const PannerVector& point = points[index];
+        if ((strictly_upper && point.y < -kHullEpsilon)
+            || (strictly_lower && point.y > kHullEpsilon)) {
             continue;
         }
-        const float distance = dot(
-            normal, subtract(points[index], points[first]));
-        positive = positive || distance > 1.0e-5F;
-        negative = negative || distance < -1.0e-5F;
-        if (positive && negative) {
+        float coefficient_sum = 0.0F;
+        for (std::size_t row = 0U; row < 3U; ++row) {
+            coefficient_sum +=
+                triplet.inverse[row][0U] * point.x
+                + triplet.inverse[row][1U] * point.y
+                + triplet.inverse[row][2U] * point.z;
+        }
+        if (coefficient_sum > 1.0F + kHullEpsilon) {
             return false;
         }
     }
@@ -204,16 +237,10 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
                 for (std::size_t third = second + 1U;
                      third < points.size();
                      ++third) {
-                    if (!is_hull_face(
-                            points, first, second, third)) {
-                        continue;
-                    }
                     PannerTriplet triplet;
-                    if (make_panner_triplet(
-                            {points[first], points[second], points[third]},
-                            {destinations[first], destinations[second],
-                             destinations[third]},
-                            triplet)) {
+                    if (make_native_hull_triplet(
+                            points, destinations,
+                            first, second, third, triplet)) {
                         triplets_.push_back(triplet);
                     }
                 }
@@ -251,19 +278,10 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
                 for (std::size_t third = second + 1U;
                      third < points.size();
                      ++third) {
-                    if (!is_hull_face(
-                            points, first, second, third)) {
-                        continue;
-                    }
                     PannerTriplet triplet;
-                    if (make_panner_triplet(
-                            {points[first],
-                             points[second],
-                             points[third]},
-                            {destinations[first],
-                             destinations[second],
-                             destinations[third]},
-                            triplet)) {
+                    if (make_native_hull_triplet(
+                            points, destinations,
+                            first, second, third, triplet)) {
                         triplets_.push_back(triplet);
                     }
                 }
@@ -297,7 +315,7 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
                         0.0F),
                     panner_channel_count_,
                     triplets_,
-                    1.0e-6F,
+                    1.0e-7F,
                     power_gains)) {
                 throw std::runtime_error(
                     "cannot construct native virtual-speaker fold matrix");
@@ -404,7 +422,7 @@ bool LayoutPanner::gains_q15(
                   coordinates.azimuth_degrees, elevation),
               panner_channel_count_,
               triplets_,
-              1.0e-6F,
+              1.0e-7F,
               hull_normalization,
               floating)
         : pan_extended_source(
@@ -415,29 +433,9 @@ bool LayoutPanner::gains_q15(
               rotation_degrees,
               panner_channel_count_,
               triplets_,
-              1.0e-6F,
+              1.0e-7F,
               hull_normalization,
               floating);
-    if (!panned
-        && width_degrees == 0.0F
-        && height_degrees == 0.0F
-        && (elevation < -45.0F || elevation > 45.0F)) {
-        // libdtsx(v2).so.c: dts_3d_hull_f32_t_pan projects a direction
-        // outside the speaker hull onto its nearest hull face.  The
-        // synthesized DTS:X rings use +/-45 degrees when a physical ring is
-        // absent; retry the point on that same boundary instead of dropping
-        // the whole object contribution.
-        const float hull_elevation =
-            (std::max)(-45.0F, (std::min)(45.0F, elevation));
-        panned = pan_point_source(
-            panner_vector_from_degrees(
-                coordinates.azimuth_degrees, hull_elevation),
-            panner_channel_count_,
-            triplets_,
-            1.0e-6F,
-            hull_normalization,
-            floating);
-    }
     if (!panned) {
         return false;
     }

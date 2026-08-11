@@ -1,5 +1,8 @@
 #include "render/parma_layout.hpp"
 
+#include "dtsx/speaker_mask.hpp"
+
+#include <algorithm>
 #include <array>
 
 namespace dtsx_decode {
@@ -76,6 +79,64 @@ std::uint32_t parma_main_channel_count(
         count += (main_mask >> bit) & 1U;
     }
     return count;
+}
+
+std::int32_t parma_channel_slot_from_speaker_mask(
+    std::uint32_t speaker_mask) noexcept {
+    // dtsxConvertSpkrMaskToSpkrActMask followed by
+    // DecSpkrActMaskToParmaChannelMaskTable.  A pair activity maps to two
+    // consecutive PARMA slots in the same physical order.
+    if (speaker_mask == (1U << 5U)) {
+        return -2;
+    }
+    for (std::uint32_t activity = 0U;
+         activity < kSpeakerActivityToParmaChannelMask.size();
+         ++activity) {
+        const std::vector<std::uint32_t> speakers =
+            dtsx::expand_speaker_activity_mask(1U << activity);
+        const auto found = std::find(
+            speakers.begin(), speakers.end(), speaker_mask);
+        if (found == speakers.end()) {
+            continue;
+        }
+        const std::uint32_t parma_mask =
+            kSpeakerActivityToParmaChannelMask[activity];
+        std::uint32_t ordinal = static_cast<std::uint32_t>(
+            std::distance(speakers.begin(), found));
+        for (std::uint32_t slot = 0U; slot < 32U; ++slot) {
+            if ((parma_mask & (1U << slot)) == 0U) {
+                continue;
+            }
+            if (ordinal-- == 0U) {
+                return static_cast<std::int32_t>(slot);
+            }
+        }
+        return -1;
+    }
+    return -1;
+}
+
+std::int32_t parma_main_channel_ordinal(
+    std::uint32_t channel_mask,
+    std::uint32_t speaker_mask) noexcept {
+    const std::int32_t slot =
+        parma_channel_slot_from_speaker_mask(speaker_mask);
+    if (slot < 0 || slot >= 32) {
+        return -1;
+    }
+    const std::uint32_t main_mask =
+        parma_disable_lfe_channels(channel_mask);
+    const std::uint32_t bit = 1U << static_cast<std::uint32_t>(slot);
+    if ((main_mask & bit) == 0U) {
+        return -1;
+    }
+    std::int32_t ordinal = 0;
+    for (std::uint32_t index = 0U;
+         index < static_cast<std::uint32_t>(slot);
+         ++index) {
+        ordinal += static_cast<std::int32_t>((main_mask >> index) & 1U);
+    }
+    return ordinal;
 }
 
 bool parma_is_horizontal_layout(

@@ -43,6 +43,7 @@ struct Options {
     bool version = false;
     bool probe = false;
     bool full_probe = false;
+    bool upmix = false;
     bool audio_track_explicit = false;
     bool audio_track_optional = false;
 };

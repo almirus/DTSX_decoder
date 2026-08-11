@@ -247,7 +247,8 @@ void DcaBedDecoder::remember_core(
 
 bool DcaBedDecoder::decode_extension(
     const dtsx::ElementaryFrame& frame,
-    DcaDecodedBed& decoded) {
+    DcaDecodedBed& decoded,
+    bool require_dtsx_71) {
     decoded = {};
     extension_stream_info_ = {};
     last_error_.clear();
@@ -301,7 +302,7 @@ bool DcaBedDecoder::decode_extension(
     dcadec_context_free_exss_info(stream_info);
 
     return filter_context(
-        context_.get(), decoded, true, last_error_);
+        context_.get(), decoded, require_dtsx_71, last_error_);
 }
 
 } // namespace dtsx_decode

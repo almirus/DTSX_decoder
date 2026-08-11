@@ -6,6 +6,7 @@
 #include "dtsx/xll_frame_decoder.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,13 @@ struct DecodedObjectAudioFrame final {
     bool imax_enhanced = false;
     std::uint32_t dtsx_extension_sync_word = 0;
     std::uint32_t ignored_unmapped_objects = 0;
+    std::uint32_t inactive_objects_without_waveform_audio = 0;
+    std::uint32_t unmapped_objects_missing_waveform = 0;
+    std::uint32_t unmapped_objects_channel_out_of_range = 0;
+    bool unmapped_object_detail_available = false;
+    std::uint8_t unmapped_object_waveform_id = 0;
+    std::uint32_t unmapped_object_requested_channel = 0;
+    std::uint32_t unmapped_object_available_channels = 0;
     std::vector<std::vector<std::int32_t>> waveform_channels;
     std::vector<std::uint32_t> waveform_speaker_masks;
     std::vector<std::uint32_t> waveform_source_activity_masks;
@@ -41,9 +49,17 @@ struct DecodedObjectAudioFrame final {
     std::uint8_t presentation_gain_code = 61;
     std::uint32_t metadata_presentation_headers = 0;
     std::uint32_t metadata_body_parse_failures = 0;
+    std::uint64_t metadata_body_failure_declared_bytes = 0;
     std::uint32_t raw_metadata_envelopes = 0;
+    std::uint32_t raw_metadata_envelope_parse_failures = 0;
+    std::uint64_t raw_metadata_envelope_failure_bytes = 0;
     std::uint32_t raw_metadata_crc_failures = 0;
+    std::uint64_t raw_metadata_crc_failure_bytes = 0;
     std::uint32_t raw_metadata_elements = 0;
+    // Combined type-2/3/4 metadata is the native guided-PARMA encoder
+    // matrix. It is kept independently of supplemental XLL decoding so the
+    // renderer can select SetGuided rather than reconstructing coefficients.
+    std::optional<dtsx::CombinedMixMetadata> parma_guided_metadata;
     std::vector<dtsx::ObjectMetadataBlock> objects;
 };
 

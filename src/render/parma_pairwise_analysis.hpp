@@ -20,6 +20,28 @@ public:
         float* balance,
         float* diffuseness) noexcept;
 
+    [[nodiscard]] const std::array<float, 16U>&
+    energy_ratio_state() const noexcept { return energy_ratio_state_; }
+
+#ifdef DTSX_PARMA_TESTING
+    [[nodiscard]] const std::array<float, 16U>&
+    testing_energy_ratio_state() const noexcept {
+        return energy_ratio_state_;
+    }
+    [[nodiscard]] const std::array<float, 16U>&
+    testing_position_state() const noexcept {
+        return position_state_;
+    }
+    [[nodiscard]] const std::array<float, 16U>&
+    testing_balance_state() const noexcept {
+        return balance_state_;
+    }
+    [[nodiscard]] const std::array<float, 16U>&
+    testing_diffuseness_state() const noexcept {
+        return diffuseness_state_;
+    }
+#endif
+
 private:
     static constexpr std::size_t kBandCount = 16U;
 

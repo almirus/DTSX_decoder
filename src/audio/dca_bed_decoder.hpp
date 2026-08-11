@@ -57,7 +57,8 @@ public:
 
     [[nodiscard]] bool decode_extension(
         const dtsx::ElementaryFrame& frame,
-        DcaDecodedBed& decoded);
+        DcaDecodedBed& decoded,
+        bool require_dtsx_71 = true);
 
     [[nodiscard]] const DcaDecodedBed& decoded_core() const noexcept {
         return decoded_core_;

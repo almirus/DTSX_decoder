@@ -227,6 +227,10 @@ void ParmaPairwiseAnalysis::process(
                     : metric_slow_release_;
             }
         } else {
+            // DTS_ParmaDec_SpatialAnalysisPairwise, 0x77328:
+            // in the 0.7..0.9 transition region the native controller uses
+            // the fast coefficient while the metric rises, and the regular
+            // release coefficient while it falls.
             coefficient =
                 metric <= energy_metric_state_[band]
                 ? metric_release_

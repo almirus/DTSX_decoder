@@ -84,7 +84,12 @@ cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   src\io\p2_decoder.cpp ^
   src\render\gain_interpolator.cpp src\render\layout_panner.cpp ^
   src\render\parma_layout.cpp src\render\parma_blind_config.cpp ^
+  src\render\parma_guided_controls.cpp ^
+  src\render\parma_guided_topology.cpp ^
+  src\render\parma_guided_renderer.cpp ^
   src\render\parma_pairwise.cpp src\render\parma_pairwise_analysis.cpp ^
+  src\render\parma_triplet.cpp ^
+  src\render\parma_quadruplet.cpp ^
   src\render\parma_critical_bands.cpp src\render\parma_filterbank.cpp ^
   src\render\parma_blind_renderer.cpp ^
   src\render\object_gain.cpp src\render\object_audio_renderer.cpp ^
@@ -141,8 +146,13 @@ cl /nologo ^
   bin\obj\dtsx-decode\layout_panner.obj ^
   bin\obj\dtsx-decode\parma_layout.obj ^
   bin\obj\dtsx-decode\parma_blind_config.obj ^
+  bin\obj\dtsx-decode\parma_guided_controls.obj ^
+  bin\obj\dtsx-decode\parma_guided_topology.obj ^
+  bin\obj\dtsx-decode\parma_guided_renderer.obj ^
   bin\obj\dtsx-decode\parma_pairwise.obj ^
   bin\obj\dtsx-decode\parma_pairwise_analysis.obj ^
+  bin\obj\dtsx-decode\parma_triplet.obj ^
+  bin\obj\dtsx-decode\parma_quadruplet.obj ^
   bin\obj\dtsx-decode\parma_critical_bands.obj ^
   bin\obj\dtsx-decode\parma_filterbank.obj ^
   bin\obj\dtsx-decode\parma_blind_renderer.obj ^

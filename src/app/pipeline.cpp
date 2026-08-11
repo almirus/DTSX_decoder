@@ -27,6 +27,11 @@
 #include "../io/p2_decoder.hpp"
 #include "../render/object_audio_renderer.hpp"
 #include "../render/object_gain.hpp"
+#include "../render/parma_blind_renderer.hpp"
+#include "../render/parma_filterbank.hpp"
+#include "../render/parma_guided_controls.hpp"
+#include "../render/parma_guided_renderer.hpp"
+#include "../render/parma_guided_topology.hpp"
 #include "../render/parma_layout.hpp"
 
 #include <array>
@@ -64,7 +69,8 @@ std::wstring lower_extension(std::filesystem::path path) {
 
 bool supported_input_extension(const std::filesystem::path& path) {
     const std::wstring extension = lower_extension(path);
-    return extension == L".mkv" || extension == L".mp4"
+    return extension == L".mkv" || extension == L".mka"
+        || extension == L".mp4"
         || extension == L".m2ts" || extension == L".dts"
         || extension == L".dtshd";
 }
@@ -740,6 +746,26 @@ std::string format_probe_duration(
     return output.str();
 }
 
+std::string format_probe_bytes(std::uint64_t bytes) {
+    constexpr std::uint64_t kKiB = 1024U;
+    constexpr std::uint64_t kMiB = 1024U * 1024U;
+    std::ostringstream output;
+    if (bytes >= kMiB) {
+        output << std::fixed << std::setprecision(2)
+               << static_cast<long double>(bytes)
+                      / static_cast<long double>(kMiB)
+               << " MiB";
+    } else if (bytes >= kKiB) {
+        output << std::fixed << std::setprecision(2)
+               << static_cast<long double>(bytes)
+                      / static_cast<long double>(kKiB)
+               << " KiB";
+    } else {
+        output << bytes << " B";
+    }
+    return output.str();
+}
+
 std::string probe_hex(std::uint32_t value) {
     std::ostringstream output;
     output << "0x" << std::hex << value;
@@ -955,6 +981,222 @@ std::uint32_t layout_speaker_activity_mask(
         physical_mask);
 }
 
+bool bed_channels_in_activity_order(
+    const std::vector<std::vector<std::int32_t>>& channels,
+    const std::vector<std::uint32_t>& channel_speaker_masks,
+    std::uint32_t speaker_activity_mask,
+    std::vector<std::vector<std::int32_t>>& ordered) {
+    const std::vector<std::uint32_t> expected =
+        dtsx::expand_speaker_activity_mask(speaker_activity_mask);
+    if (expected.empty()
+        || channels.size() != channel_speaker_masks.size()
+        || channels.size() < expected.size()) {
+        return false;
+    }
+    const std::size_t frame_count = channels.front().size();
+    ordered.assign(
+        expected.size(),
+        std::vector<std::int32_t>(frame_count, 0));
+    for (std::size_t output = 0U; output < expected.size(); ++output) {
+        bool found = false;
+        for (std::size_t source = 0U;
+             source < channel_speaker_masks.size();
+             ++source) {
+            if (channel_speaker_masks[source] != expected[output]) {
+                continue;
+            }
+            if (channels[source].size() != frame_count) {
+                return false;
+            }
+            ordered[output] = channels[source];
+            found = true;
+            break;
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool remap_layout_channels(
+    const std::vector<std::vector<std::int32_t>>& input,
+    const ChannelLayout& input_layout,
+    const ChannelLayout& output_layout,
+    std::vector<std::vector<std::int32_t>>& output) {
+    if (input.size() != input_layout.channels.size()
+        || input.empty()) {
+        return false;
+    }
+    const std::size_t frame_count = input.front().size();
+    output.assign(
+        output_layout.channels.size(),
+        std::vector<std::int32_t>(frame_count, 0));
+    for (std::size_t out_index = 0U;
+         out_index < output_layout.channels.size();
+         ++out_index) {
+        const auto found = std::find(
+            input_layout.channels.begin(),
+            input_layout.channels.end(),
+            output_layout.channels[out_index]);
+        if (found == input_layout.channels.end()) {
+            continue;
+        }
+        const std::size_t in_index = static_cast<std::size_t>(
+            std::distance(input_layout.channels.begin(), found));
+        if (input[in_index].size() != frame_count) {
+            return false;
+        }
+        output[out_index] = input[in_index];
+    }
+    return true;
+}
+
+class ParmaObjectDelay final {
+public:
+    [[nodiscard]] bool process(
+        std::vector<std::vector<std::int32_t>>& channels) {
+        if (channels.empty()) {
+            return false;
+        }
+        const std::size_t frame_count = channels.front().size();
+        if (frame_count == 0U) {
+            return false;
+        }
+        for (const auto& channel : channels) {
+            if (channel.size() != frame_count) {
+                return false;
+            }
+        }
+        if (!initialized_) {
+            delay_.assign(
+                channels.size(),
+                std::vector<std::int32_t>(kLatencySamples, 0));
+            position_ = 0U;
+            initialized_ = true;
+        }
+        if (delay_.size() != channels.size()) {
+            return false;
+        }
+        for (std::size_t sample = 0U; sample < frame_count; ++sample) {
+            for (std::size_t channel = 0U;
+                 channel < channels.size();
+                 ++channel) {
+                const std::int32_t delayed = delay_[channel][position_];
+                delay_[channel][position_] = channels[channel][sample];
+                channels[channel][sample] = delayed;
+            }
+            position_ = (position_ + 1U) % kLatencySamples;
+        }
+        return true;
+    }
+
+private:
+    // dtsPlayerParmaDelayController_GetZeroBed uses
+    // DTS_ParmaDec_GetLatency_Samples() for the 1024/64 OSFB path.
+    static constexpr std::size_t kLatencySamples =
+        parma_filterbank_latency_samples();
+    std::vector<std::vector<std::int32_t>> delay_;
+    std::size_t position_ = 0U;
+    bool initialized_ = false;
+};
+
+bool apply_parma_upmix(
+    ParmaBlindRenderer& blind_upmixer,
+    ParmaGuidedRenderer& guided_upmixer,
+    const std::vector<std::vector<std::int32_t>>& bed_channels,
+    std::uint32_t bed_speaker_activity_mask,
+    const std::optional<dtsx::CombinedMixMetadata>& guided_metadata,
+    std::uint32_t sample_rate,
+    const ChannelLayout& output_layout,
+    std::vector<std::vector<std::int32_t>>& upmixed) {
+    if (dtsx::has_height_channels(bed_speaker_activity_mask)) {
+        throw std::runtime_error(
+            "--upmix requires a horizontal bed (2.0/5.1/7.1); "
+            "source already has height channels");
+    }
+    const std::optional<ChannelLayout> layout_7_1_4 =
+        find_layout("7.1.4");
+    if (!layout_7_1_4) {
+        return false;
+    }
+    ParmaGuidedControls guided_controls;
+    if (guided_metadata
+        && derive_parma_guided_controls(
+            *guided_metadata,
+            bed_speaker_activity_mask,
+            layout_speaker_activity_mask(output_layout),
+            guided_controls)) {
+        ParmaGuidedTopology topology;
+        bool supported_topology =
+            build_parma_guided_topology(guided_controls, topology);
+        for (std::uint32_t node = 0U;
+             supported_topology && node < topology.node_count;
+             ++node) {
+            supported_topology = topology.nodes[node].mode <= 3U;
+        }
+        if (supported_topology) {
+            return guided_upmixer.render(
+                bed_channels,
+                bed_speaker_activity_mask,
+                output_layout,
+                guided_controls,
+                sample_rate,
+                upmixed);
+        }
+    }
+    ParmaLayoutControls controls;
+    if (!derive_parma_layout_controls(
+            bed_speaker_activity_mask,
+            layout_speaker_activity_mask(*layout_7_1_4),
+            controls)
+        || controls.blind_table_row < 9
+        || controls.blind_table_row > 17
+        || (controls.input_main_channel_mask != 0x01U
+            && controls.input_main_channel_mask != 0x06U
+            && controls.input_main_channel_mask != 0x07U
+            && controls.input_main_channel_mask != 0x26U
+            && controls.input_main_channel_mask != 0x27U
+            && controls.input_main_channel_mask != 0x1EU
+            && controls.input_main_channel_mask != 0x1FU
+            && controls.input_main_channel_mask != 0x3FU
+            && controls.input_main_channel_mask != 0xDFU)
+        || controls.output_main_channel_mask != 0x360DFU) {
+        throw std::runtime_error(
+            "--upmix input bed is not represented by a verified PARMA "
+            "blind row for 5.1.4/7.1.4 output");
+    }
+    std::vector<std::vector<std::int32_t>> upmixed_7_1_4;
+    if (!blind_upmixer.render(
+            bed_channels,
+            bed_speaker_activity_mask,
+            *layout_7_1_4,
+            sample_rate,
+            upmixed_7_1_4)) {
+        return false;
+    }
+    if (output_layout.name == "7.1.4") {
+        if (output_layout.channels == layout_7_1_4->channels) {
+            upmixed = std::move(upmixed_7_1_4);
+            return true;
+        }
+        return remap_layout_channels(
+            upmixed_7_1_4,
+            *layout_7_1_4,
+            output_layout,
+            upmixed);
+    }
+    if (output_layout.name == "5.1.4") {
+        return remap_layout_channels(
+            upmixed_7_1_4,
+            *layout_7_1_4,
+            output_layout,
+            upmixed);
+    }
+    throw std::runtime_error(
+        "--upmix currently supports --layout 5.1.4 or 7.1.4");
+}
+
 std::vector<dtsx::XllLossyBaseChannel> make_xll_lossy_base(
     const DcaDecodedBed& core) {
     std::vector<dtsx::XllLossyBaseChannel> result;
@@ -1058,7 +1300,28 @@ void run_internal_probe(
     constexpr std::uint64_t kQuickProbeDurationSeconds = 10U;
 
     ProgressReporter progress;
-    progress.update("probe", -1);
+    const char* const progress_stage =
+        options.full_probe ? "full probe" : "probe";
+    progress.update(progress_stage, -1);
+    std::uint64_t probe_total_bytes = 0U;
+    std::uint64_t probe_total_milliseconds = 0U;
+    if (options.full_probe) {
+        if (is_elementary_dts(options.input)) {
+            std::error_code size_error;
+            probe_total_bytes =
+                std::filesystem::file_size(options.input, size_error);
+            if (size_error) {
+                probe_total_bytes = 0U;
+            }
+        } else {
+            probe_total_milliseconds =
+                ffmpeg_input_duration_milliseconds(options);
+        }
+        if (probe_total_bytes != 0U
+            || probe_total_milliseconds != 0U) {
+            progress.update(progress_stage, 0);
+        }
+    }
     const ChannelCapacity sampled_capacity = options.full_probe
         ? ChannelCapacity{}
         : inspect_channel_capacity(options, true);
@@ -1081,14 +1344,26 @@ void run_internal_probe(
     std::uint32_t detected_xll_pcm_bits = 0U;
     std::uint32_t detected_xll_storage_bits = 0U;
     std::uint64_t malformed_object_frame_count = 0U;
+    std::uint64_t malformed_object_frame_bytes = 0U;
     std::uint64_t xll_pbr_fallback_frame_count = 0U;
+    std::uint64_t xll_pbr_fallback_frame_bytes = 0U;
     std::uint32_t maximum_supplemental_xll_channels = 0U;
     std::uint64_t supplemental_activity_total_samples = 0U;
     std::uint64_t supplemental_activity_active_samples = 0U;
     std::uint64_t metadata_chunk_count = 0U;
     std::uint64_t metadata_body_parse_failure_count = 0U;
+    std::uint64_t metadata_body_failure_declared_bytes = 0U;
     std::uint64_t raw_metadata_envelope_count = 0U;
+    std::uint64_t raw_metadata_envelope_parse_failure_count = 0U;
+    std::uint64_t raw_metadata_envelope_failure_bytes = 0U;
     std::uint64_t raw_metadata_crc_failure_count = 0U;
+    std::uint64_t raw_metadata_crc_failure_bytes = 0U;
+    std::uint64_t first_rejected_metadata_frame = 0U;
+    std::uint64_t first_rejected_metadata_offset = 0U;
+    std::uint64_t first_rejected_metadata_sample = 0U;
+    std::uint64_t last_rejected_metadata_frame = 0U;
+    std::uint64_t last_rejected_metadata_offset = 0U;
+    std::uint64_t last_rejected_metadata_sample = 0U;
     bool nonempty_xll_metadata_chunk_seen = false;
     std::size_t maximum_object_count = 0U;
     std::set<std::uint32_t> object_ids;
@@ -1115,14 +1390,73 @@ void run_internal_probe(
     bool detected_uhd_type1_certified_content = false;
     std::uint32_t detected_dtsx_extension_sync_word = 0U;
     std::uint32_t ignored_unmapped_objects = 0U;
+    std::uint64_t ignored_unmapped_object_occurrences = 0U;
+    std::uint64_t frames_with_ignored_unmapped_objects = 0U;
+    std::uint64_t inactive_object_frames_without_audio = 0U;
+    std::uint64_t unmapped_missing_waveform_occurrences = 0U;
+    std::uint64_t unmapped_channel_out_of_range_occurrences = 0U;
+    std::uint64_t first_unmapped_frame = 0U;
+    std::uint64_t first_unmapped_offset = 0U;
+    std::uint64_t first_unmapped_sample = 0U;
+    std::uint64_t last_unmapped_frame = 0U;
+    std::uint64_t last_unmapped_offset = 0U;
+    std::uint64_t last_unmapped_sample = 0U;
+    std::uint32_t first_unmapped_waveform_id = 0U;
+    std::uint32_t first_unmapped_requested_channel = 0U;
+    std::uint32_t first_unmapped_available_channels = 0U;
     std::uint32_t detected_uhd_audio_chunk_id = 0U;
     std::map<std::uint32_t, ProbeObjectInfo> probe_objects;
     std::vector<std::vector<dtsx::XllChannelSetHeader>>
         probe_previous_xll_headers;
     dtsx::UhdFrameParserState probe_uhd_state;
+    int last_probe_percent = 0;
 
     while (reader.read(frame)) {
         ++frame_count;
+        if (options.full_probe) {
+            int percent = -1;
+            if (probe_total_bytes != 0U) {
+                const std::uint64_t scanned_bytes = (std::min)(
+                    probe_total_bytes,
+                    frame.stream_offset + frame.bytes.size());
+                percent = static_cast<int>(
+                    scanned_bytes * 100U / probe_total_bytes);
+            } else if (probe_total_milliseconds != 0U
+                       && detected_frame_duration != 0U
+                       && detected_stream_sample_rate != 0U) {
+                std::uint64_t timed_frame_count =
+                    uhd_frame_count != 0U
+                        ? uhd_frame_count
+                        : extension_frame_count != 0U
+                        ? extension_frame_count
+                        : core_frame_count;
+                if (frame.packing == dtsx::StreamPacking::DtsUhd) {
+                    ++timed_frame_count;
+                } else if ((frame.packing
+                                == dtsx::StreamPacking::ExtensionBigEndian
+                            || frame.packing
+                                == dtsx::StreamPacking::ExtensionLittleEndian)
+                           && uhd_frame_count == 0U) {
+                    ++timed_frame_count;
+                } else if (extension_frame_count == 0U
+                           && uhd_frame_count == 0U) {
+                    ++timed_frame_count;
+                }
+                const std::uint64_t scanned_milliseconds =
+                    timed_frame_count * detected_frame_duration * 1000U
+                    / detected_stream_sample_rate;
+                percent = static_cast<int>(
+                    (std::min)(scanned_milliseconds,
+                               probe_total_milliseconds)
+                    * 100U / probe_total_milliseconds);
+            }
+            if (percent >= 0) {
+                percent = (std::min)(percent, 99);
+                last_probe_percent = (std::max)(
+                    last_probe_percent, percent);
+                progress.update(progress_stage, last_probe_percent);
+            }
+        }
         if (frame.packing == dtsx::StreamPacking::DtsUhd) {
             dtsx::UhdFrameHeader uhd;
             const dtsx::UhdHeaderParseResult result =
@@ -1130,6 +1464,7 @@ void run_internal_probe(
                     frame.bytes, probe_uhd_state, uhd);
             if (result != dtsx::UhdHeaderParseResult::Complete) {
                 ++malformed_object_frame_count;
+                malformed_object_frame_bytes += frame.bytes.size();
                 continue;
             }
             ++uhd_frame_count;
@@ -1197,6 +1532,7 @@ void run_internal_probe(
             dtsx::bitstream::Cursor header_source = words.cursor();
             if (!dtsx::unpack_exss_header(header_source, header)) {
                 ++malformed_object_frame_count;
+                malformed_object_frame_bytes += frame.bytes.size();
                 continue;
             }
             detected_frame_duration = header.frame_duration != 0U
@@ -1214,6 +1550,7 @@ void run_internal_probe(
                 if (!dtsx::unpack_exss_asset_summary(
                         asset_source, header, asset, asset_index)) {
                     ++malformed_object_frame_count;
+                    malformed_object_frame_bytes += frame.bytes.size();
                     asset_parse_failed = true;
                     break;
                 }
@@ -1365,9 +1702,11 @@ void run_internal_probe(
                 }
                 if (internal_bed_decoded) {
                     ++xll_pbr_fallback_frame_count;
+                    xll_pbr_fallback_frame_bytes += frame.bytes.size();
                     continue;
                 }
                 ++malformed_object_frame_count;
+                malformed_object_frame_bytes += frame.bytes.size();
                 continue;
             }
             const SupplementalLayoutObservation supplemental =
@@ -1429,16 +1768,75 @@ void run_internal_probe(
             ignored_unmapped_objects = (std::max)(
                 ignored_unmapped_objects,
                 decoded.ignored_unmapped_objects);
+            ignored_unmapped_object_occurrences +=
+                decoded.ignored_unmapped_objects;
+            inactive_object_frames_without_audio +=
+                decoded.inactive_objects_without_waveform_audio;
+            unmapped_missing_waveform_occurrences +=
+                decoded.unmapped_objects_missing_waveform;
+            unmapped_channel_out_of_range_occurrences +=
+                decoded.unmapped_objects_channel_out_of_range;
+            if (decoded.ignored_unmapped_objects != 0U) {
+                ++frames_with_ignored_unmapped_objects;
+                const std::uint64_t sample_position =
+                    extension_frame_count == 0U
+                        ? 0U
+                        : (extension_frame_count - 1U)
+                            * detected_frame_duration;
+                if (first_unmapped_frame == 0U) {
+                    first_unmapped_frame = frame_count;
+                    first_unmapped_offset = frame.stream_offset;
+                    first_unmapped_sample = sample_position;
+                    if (decoded.unmapped_object_detail_available) {
+                        first_unmapped_waveform_id =
+                            decoded.unmapped_object_waveform_id;
+                        first_unmapped_requested_channel =
+                            decoded.unmapped_object_requested_channel;
+                        first_unmapped_available_channels =
+                            decoded.unmapped_object_available_channels;
+                    }
+                }
+                last_unmapped_frame = frame_count;
+                last_unmapped_offset = frame.stream_offset;
+                last_unmapped_sample = sample_position;
+            }
             if (decoded.metadata_speaker_activity_mask != 0U) {
                 detected_metadata_activity_mask =
                     decoded.metadata_speaker_activity_mask;
             }
             metadata_body_parse_failure_count +=
                 decoded.metadata_body_parse_failures;
+            metadata_body_failure_declared_bytes +=
+                decoded.metadata_body_failure_declared_bytes;
             raw_metadata_envelope_count +=
                 decoded.raw_metadata_envelopes;
+            raw_metadata_envelope_parse_failure_count +=
+                decoded.raw_metadata_envelope_parse_failures;
+            raw_metadata_envelope_failure_bytes +=
+                decoded.raw_metadata_envelope_failure_bytes;
             raw_metadata_crc_failure_count +=
                 decoded.raw_metadata_crc_failures;
+            raw_metadata_crc_failure_bytes +=
+                decoded.raw_metadata_crc_failure_bytes;
+            const bool rejected_metadata_in_frame =
+                decoded.metadata_body_parse_failures != 0U
+                || decoded.raw_metadata_envelope_parse_failures != 0U
+                || decoded.raw_metadata_crc_failures != 0U;
+            if (rejected_metadata_in_frame) {
+                const std::uint64_t sample_position =
+                    extension_frame_count == 0U
+                        ? 0U
+                        : (extension_frame_count - 1U)
+                            * detected_frame_duration;
+                if (first_rejected_metadata_frame == 0U) {
+                    first_rejected_metadata_frame = frame_count;
+                    first_rejected_metadata_offset = frame.stream_offset;
+                    first_rejected_metadata_sample = sample_position;
+                }
+                last_rejected_metadata_frame = frame_count;
+                last_rejected_metadata_offset = frame.stream_offset;
+                last_rejected_metadata_sample = sample_position;
+            }
             if (!decoded.objects.empty()) {
                 maximum_object_count = (std::max)(
                     maximum_object_count, decoded.objects.size());
@@ -1534,7 +1932,7 @@ void run_internal_probe(
             sampled_capacity.maximum_supplemental_channels);
     }
 
-    progress.done("probe");
+    progress.done(progress_stage);
 
     const bool color = console_style::color_enabled(stdout);
     const std::uint32_t sample_rate =
@@ -1849,8 +2247,13 @@ void run_internal_probe(
                         + " signalled");
         if (ignored_unmapped_objects != 0U) {
             print_probe_field(
-                "Ignored service/unmapped records",
+                "Ignored/unmapped max per frame",
                 ignored_unmapped_objects);
+        }
+        if (inactive_object_frames_without_audio != 0U) {
+            print_probe_field(
+                "Inactive object frames (no waveform)",
+                inactive_object_frames_without_audio);
         }
         if (maximum_object_count != object_ids.size()) {
             print_probe_field(
@@ -1871,9 +2274,96 @@ void run_internal_probe(
         }
     }
 
+    if (options.full_probe) {
+        const std::uint64_t rejected_metadata_bytes =
+            raw_metadata_envelope_failure_bytes
+            +
+            raw_metadata_crc_failure_bytes
+            + metadata_body_failure_declared_bytes;
+        print_probe_section("Unresolved data", color);
+        print_probe_field(
+            "Rejected metadata bytes",
+            format_probe_bytes(rejected_metadata_bytes));
+        print_probe_field(
+            "Malformed frame source bytes",
+            format_probe_bytes(malformed_object_frame_bytes));
+        print_probe_field(
+            "XLL fallback source bytes",
+            format_probe_bytes(xll_pbr_fallback_frame_bytes));
+        print_probe_field(
+            "CRC-failed metadata bytes",
+            format_probe_bytes(raw_metadata_crc_failure_bytes));
+        print_probe_field(
+            "Malformed envelope bytes",
+            format_probe_bytes(raw_metadata_envelope_failure_bytes));
+        print_probe_field(
+            "Failed body declared bytes",
+            format_probe_bytes(metadata_body_failure_declared_bytes));
+        print_probe_field(
+            "Unmapped object-frame instances",
+            ignored_unmapped_object_occurrences);
+        print_probe_field(
+            "Frames with unmapped objects",
+            frames_with_ignored_unmapped_objects);
+        print_probe_field(
+            "Missing waveform mapping",
+            unmapped_missing_waveform_occurrences);
+        print_probe_field(
+            "Waveform channel out of range",
+            unmapped_channel_out_of_range_occurrences);
+        if (first_unmapped_frame != 0U) {
+            print_probe_field(
+                "First unmapped object",
+                format_probe_duration(
+                    first_unmapped_sample, sample_rate)
+                    + ", frame "
+                    + std::to_string(first_unmapped_frame)
+                    + ", offset "
+                    + std::to_string(first_unmapped_offset));
+            print_probe_field(
+                "Last unmapped object",
+                format_probe_duration(
+                    last_unmapped_sample, sample_rate)
+                    + ", frame "
+                    + std::to_string(last_unmapped_frame)
+                    + ", offset "
+                    + std::to_string(last_unmapped_offset));
+            print_probe_field(
+                "First unmapped mapping",
+                "waveform "
+                    + std::to_string(first_unmapped_waveform_id)
+                    + ", channel "
+                    + std::to_string(first_unmapped_requested_channel)
+                    + ", available "
+                    + std::to_string(first_unmapped_available_channels));
+        }
+        if (first_rejected_metadata_frame != 0U) {
+            print_probe_field(
+                "First rejected metadata",
+                format_probe_duration(
+                    first_rejected_metadata_sample, sample_rate)
+                    + ", frame "
+                    + std::to_string(first_rejected_metadata_frame)
+                    + ", offset "
+                    + std::to_string(first_rejected_metadata_offset));
+            print_probe_field(
+                "Last rejected metadata",
+                format_probe_duration(
+                    last_rejected_metadata_sample, sample_rate)
+                    + ", frame "
+                    + std::to_string(last_rejected_metadata_frame)
+                    + ", offset "
+                    + std::to_string(last_rejected_metadata_offset));
+        }
+        print_probe_field(
+            "Unparsed waveform bytes",
+            "not separately measurable; XLL frame failures are counted above");
+    }
+
     const std::uint64_t probe_failures =
         malformed_object_frame_count
         + metadata_body_parse_failure_count
+        + raw_metadata_envelope_parse_failure_count
         + raw_metadata_crc_failure_count
         + xll_pbr_fallback_frame_count;
     const bool dtsx_metadata_possibly_absent =
@@ -1900,6 +2390,9 @@ void run_internal_probe(
             print_probe_field(
                 "Metadata body failures",
                 metadata_body_parse_failure_count);
+            print_probe_field(
+                "Metadata envelope failures",
+                raw_metadata_envelope_parse_failure_count);
             print_probe_field(
                 "Raw metadata CRC failures",
                 raw_metadata_crc_failure_count);
@@ -3358,6 +3851,12 @@ std::uint64_t render_object_stream(
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
     ObjectAudioRenderer renderer(layout, options.verbose);
+    ParmaBlindRenderer parma_upmixer;
+    const std::unique_ptr<ParmaGuidedRenderer> parma_guided_upmixer =
+        options.upmix
+        ? std::make_unique<ParmaGuidedRenderer>()
+        : nullptr;
+    ParmaObjectDelay parma_object_delay;
     ProgressReporter progress;
     std::error_code size_error;
     const std::uint64_t elementary_size =
@@ -3406,7 +3905,23 @@ std::uint64_t render_object_stream(
         DcaDecodedBed decoded_bed;
         const bool decoded_bed_available =
             dca_bed_decoder.decode_extension(
-                elementary, decoded_bed);
+                elementary,
+                decoded_bed,
+                !options.upmix);
+        std::vector<std::vector<std::int32_t>> upmix_dca_bed;
+        std::uint32_t upmix_dca_activity_mask = 0U;
+        const bool upmix_dca_ready =
+            options.upmix
+            && decoded_bed_available
+            && bed_channels_in_activity_order(
+                decoded_bed.channels,
+                decoded_bed.channel_speaker_masks,
+                decoded_bed.speaker_activity_mask,
+                upmix_dca_bed);
+        if (upmix_dca_ready) {
+            upmix_dca_activity_mask =
+                decoded_bed.speaker_activity_mask;
+        }
         DecodedObjectAudioFrame decoded;
         const auto lossy_base = make_xll_lossy_base(
             dca_bed_decoder.decoded_core());
@@ -3494,15 +4009,65 @@ std::uint64_t render_object_stream(
                 "native DTS:X embedded object fold-down removal failed");
         }
         std::vector<std::vector<std::int32_t>> bed;
-        const bool rendered_supplemental =
-            render_mode != RenderMode::Bed
-            && map_supplemental_xll_to_height_layout(
-                decoded, layout, bed);
-        if (!rendered_supplemental
-            && !map_xll_bed_to_layout(decoded, layout, bed)) {
-            throw std::runtime_error(
-                "native DTS:X XLL bed cannot be mapped to the requested "
-                "layout");
+        bool rendered_supplemental = false;
+        if (options.upmix) {
+            std::vector<std::vector<std::int32_t>> bed_input;
+            std::uint32_t bed_activity_mask = 0U;
+            const auto activity_channel_count =
+                [](std::uint32_t mask) {
+                    return dtsx::expand_speaker_activity_mask(mask)
+                        .size();
+                };
+            // Prefer native XLL bed when the object decoder produced one.
+            // Otherwise use the libdcadec bed captured before any moves.
+            if (decode_result == ObjectFrameDecodeResult::Decoded
+                && !decoded.bed_channels.empty()
+                && decoded.bed_speaker_activity_mask != 0U
+                && decoded.bed_channels.size()
+                    == activity_channel_count(
+                        decoded.bed_speaker_activity_mask)) {
+                bed_input = decoded.bed_channels;
+                bed_activity_mask =
+                    decoded.bed_speaker_activity_mask;
+            } else if (upmix_dca_ready) {
+                bed_input = std::move(upmix_dca_bed);
+                bed_activity_mask = upmix_dca_activity_mask;
+            } else if (!decoded.bed_channels.empty()
+                       && decoded.bed_speaker_activity_mask != 0U
+                       && decoded.bed_channels.size()
+                           == activity_channel_count(
+                               decoded.bed_speaker_activity_mask)) {
+                bed_input = decoded.bed_channels;
+                bed_activity_mask =
+                    decoded.bed_speaker_activity_mask;
+            }
+            if (bed_input.empty() || bed_activity_mask == 0U) {
+                throw std::runtime_error(
+                    "--upmix requires a decoded horizontal channel bed");
+            }
+            if (!apply_parma_upmix(
+                    parma_upmixer,
+                    *parma_guided_upmixer,
+                    bed_input,
+                    bed_activity_mask,
+                    decoded.parma_guided_metadata,
+                    decoded.sample_rate,
+                    layout,
+                    bed)) {
+                throw std::runtime_error(
+                    "PARMA upmix failed for the current frame");
+            }
+        } else {
+            rendered_supplemental =
+                render_mode != RenderMode::Bed
+                && map_supplemental_xll_to_height_layout(
+                    decoded, layout, bed);
+            if (!rendered_supplemental
+                && !map_xll_bed_to_layout(decoded, layout, bed)) {
+                throw std::runtime_error(
+                    "native DTS:X XLL bed cannot be mapped to the requested "
+                    "layout");
+            }
         }
         if (render_mode == RenderMode::Bed
             || render_mode == RenderMode::BedWithoutObjects) {
@@ -3511,21 +4076,43 @@ std::uint64_t render_object_stream(
             }
             continue;
         }
-        if (rendered_supplemental
-            && decoded.objects.empty()) {
+        if (rendered_supplemental && decoded.objects.empty()) {
             if (write_limited(bed)) {
                 break;
             }
             continue;
         }
         std::vector<std::vector<std::int32_t>> rendered;
-        if (!renderer.render(decoded, rendered)) {
+        if (options.upmix && decoded.objects.empty()) {
+            // DTS_ParmaDec_GetLatency_Samples delays the PARMA bed by 1024
+            // samples. Keep the object bus on the same timeline even during
+            // frames with no object metadata; otherwise every object gap
+            // would collapse the native delay line and create discontinuities
+            // when the next object frame arrives.
+            rendered.assign(
+                bed.size(),
+                std::vector<std::int32_t>(bed.front().size(), 0));
+        } else if (!renderer.render(decoded, rendered)) {
+            if (options.upmix) {
+                // An unrenderable object frame is still a zero object bus in
+                // the native mixer. Advance the delay line rather than
+                // shortening the preceding object tail.
+                rendered.assign(
+                    bed.size(),
+                    std::vector<std::int32_t>(bed.front().size(), 0));
+            } else {
             // Preserve a usable channel bed when an object is unresolved or
             // its metadata cannot be rendered for the selected layout.
-            if (write_limited(bed)) {
-                break;
+                if (write_limited(bed)) {
+                    break;
+                }
+                continue;
             }
-            continue;
+        }
+        if (options.upmix
+            && !parma_object_delay.process(rendered)) {
+            throw std::runtime_error(
+                "PARMA object-delay alignment failed");
         }
         if (render_mode == RenderMode::ObjectsOnly) {
             apply_native_object_output_limiters(rendered);
@@ -3639,7 +4226,7 @@ int run_pipeline(const Options& requested_options) {
     }
     if (!supported_input_extension(options.input)) {
         throw std::runtime_error(
-            "input extension must be .mkv, .mp4, .m2ts, .dts or .dtshd");
+            "input extension must be .mkv, .mka, .mp4, .m2ts, .dts or .dtshd");
     }
     if (!is_elementary_dts(options.input)
         && !options.audio_track_explicit) {
@@ -3693,10 +4280,19 @@ int run_pipeline(const Options& requested_options) {
             layout ? &*layout : nullptr);
         return 0;
     }
-    if (inspect_selected_dts_profile(options)
-        != DtsTrackRank::DtsX) {
-        print_ffmpeg_decode_redirect(options);
-        return 1;
+    const DtsTrackRank selected_rank =
+        inspect_selected_dts_profile(options);
+    if (selected_rank != DtsTrackRank::DtsX) {
+        if (!options.upmix
+            || selected_rank == DtsTrackRank::None) {
+            print_ffmpeg_decode_redirect(options);
+            return 1;
+        }
+        if (options.verbose) {
+            std::cerr
+                << "note: non-DTS:X stream accepted for --upmix "
+                   "PARMA bed path\n";
+        }
     }
     const bool dts_uhd = input_is_dts_uhd(options);
     if (dts_uhd) {
@@ -3757,8 +4353,9 @@ int run_pipeline(const Options& requested_options) {
             channel_capacity_warning(
                 *layout,
                 capacity.physical_speakers,
-                options.render_mode != RenderMode::Bed
-                    && capacity.dynamic_objects);
+                options.upmix
+                    || (options.render_mode != RenderMode::Bed
+                        && capacity.dynamic_objects));
     }
 
     if (dts_uhd) {

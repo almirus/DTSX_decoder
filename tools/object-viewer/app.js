@@ -24,8 +24,11 @@ const ui = {
   objectTrailLength: document.querySelector("#objectTrailLength"),
   objectTrailLengthValue: document.querySelector("#objectTrailLengthValue"),
   objectDepthScale: document.querySelector("#objectDepthScale"),
+  objectMetadataSize: document.querySelector("#objectMetadataSize"),
+  objectMetadataGain: document.querySelector("#objectMetadataGain"),
   objectGuideLines: document.querySelector("#objectGuideLines"),
   bedSpeakers: document.querySelector("#bedSpeakers"),
+  centerSofa: document.querySelector("#centerSofa"),
   masterVolume: document.querySelector("#masterVolume"),
   masterVolumeValue: document.querySelector("#masterVolumeValue"),
   playPause: document.querySelector("#playPause"),
@@ -33,6 +36,8 @@ const ui = {
   stop: document.querySelector("#stop"),
   loop: document.querySelector("#loop"),
   timeline: document.querySelector("#timeline"),
+  timelineRuler: document.querySelector("#timelineRuler"),
+  timelineEvents: document.querySelector("#timelineEvents"),
   currentTime: document.querySelector("#currentTime"),
   duration: document.querySelector("#duration"),
   canvas: document.querySelector("#scene"),
@@ -50,8 +55,11 @@ const state = {
     trailsEnabled: true,
     trailSeconds: 0.35,
     depthScaleEnabled: true,
+    metadataSizeEnabled: false,
+    metadataGainEnabled: true,
     guideLinesEnabled: true,
     bedSpeakersEnabled: true,
+    sofaEnabled: true,
   },
   beds: [],
   duration: 0,
@@ -344,70 +352,172 @@ function createBedRouting(definition, audio) {
   };
 }
 
-function coordinatePoint(value) {
+function coordinatePoint(value, header = {}) {
   if (value.coordinateStatus !== "decoded") return null;
-  if (![value.ptsSamples, value.sampleRate, value.azimuthDeg, value.elevationDeg]
+  const ptsSamples = Number.isFinite(value.startSamples)
+    ? value.startSamples
+    : value.ptsSamples;
+  const sampleRate = Number.isFinite(value.sampleRate)
+    ? value.sampleRate
+    : header.sampleRate;
+  if (![ptsSamples, sampleRate, value.azimuthDeg, value.elevationDeg]
       .every(Number.isFinite)) return null;
   return {
-    ptsSamples: value.ptsSamples,
+    ptsSamples,
     durationSamples: Number.isFinite(value.durationSamples)
       ? value.durationSamples
       : 0,
-    sampleRate: value.sampleRate,
-    time: value.ptsSamples / value.sampleRate,
+    sampleRate,
+    time: ptsSamples / sampleRate,
     duration: Number.isFinite(value.durationSamples)
-      ? value.durationSamples / value.sampleRate
+      ? value.durationSamples / sampleRate
       : 0,
     azimuth: value.azimuthDeg,
     elevation: value.elevationDeg,
     distance: Number.isFinite(value.distance) ? value.distance : 1,
-    objectId: value.objectId,
-    waveformId: value.waveformId,
+    widthDeg: Number.isFinite(value.widthDeg) ? value.widthDeg : 0,
+    heightDeg: Number.isFinite(value.heightDeg) ? value.heightDeg : 0,
+    rotationDeg: Number.isFinite(value.rotationDeg) ? value.rotationDeg : 0,
+    objectId: value.objectId ?? header.objectId,
+    waveformId: value.waveformId ?? header.waveformId,
     renderable: value.renderable !== false,
     audioActive: value.audioActive !== false,
+    peakSample: Number.isFinite(value.peakSample) ? value.peakSample : 0,
+    objectGainPresent: value.objectGainPresent === true,
+    objectGainCode: Number.isFinite(value.objectGainCode)
+      ? value.objectGainCode
+      : null,
+    objectGainExponent: Number.isFinite(value.objectGainExponent)
+      ? value.objectGainExponent
+      : null,
+    presentationGainCode: Number.isFinite(value.presentationGainCode)
+      ? value.presentationGainCode
+      : null,
+    metadataGainQ23: Number.isFinite(value.metadataGainQ23)
+      ? value.metadataGainQ23
+      : null,
+    metadataGainLinear: effectiveMetadataGain(value),
+    metadataGainDb: Number.isFinite(value.metadataGainDb)
+      ? value.metadataGainDb
+      : null,
+    interpolation: value.interpolation || "linear",
   };
 }
 
-function parseCoordinateLine(line, lineNumber) {
-  if (!line || !line.includes('"coordinateStatus":"decoded"')) return null;
+function effectiveMetadataGain(value) {
+  if (Number.isFinite(value.metadataGainLinear)) {
+    return Math.max(0, value.metadataGainLinear);
+  }
+  if (Number.isFinite(value.metadataGainQ23)) {
+    return Math.max(0, value.metadataGainQ23 / 8388608);
+  }
+  if (Number.isFinite(value.metadataGainDb)) {
+    return Math.pow(10, value.metadataGainDb / 20);
+  }
+  return 1;
+}
+
+function parseCoordinateLine(line, lineNumber, records) {
+  if (!line) return;
   try {
-    return coordinatePoint(JSON.parse(line));
+    const value = JSON.parse(line);
+    if (value.type === "header" && value.version >= 2) {
+      records.header = value;
+    } else if (value.type === "state") {
+      records.states.push(value);
+    } else if (value.type === "activity") {
+      records.activities.push(value);
+    } else {
+      const point = coordinatePoint(value);
+      if (point) records.legacy.push(point);
+    }
   } catch (error) {
     console.warn(`JSONL, строка ${lineNumber}:`, error);
-    return null;
   }
 }
 
-function finishCoordinatePoints(points, ordered) {
-  if (!ordered) points.sort((a, b) => a.time - b.time);
+function activityAt(activities, sample) {
+  let low = 0;
+  let high = activities.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (activities[mid].startSamples <= sample) low = mid + 1;
+    else high = mid;
+  }
+  const activity = activities[low - 1];
+  if (!activity) return null;
+  const end = activity.startSamples + activity.durationSamples;
+  return sample < end ? activity : null;
+}
+
+function finishCoordinateRecords(records) {
+  const points = records.legacy;
+  const header = records.header || {};
+  const activities = records.activities
+    .filter((entry) => Number.isFinite(entry.startSamples)
+      && Number.isFinite(entry.durationSamples)
+      && entry.durationSamples > 0)
+    .sort((a, b) => a.startSamples - b.startSamples);
+  const hasActivityTimeline = activities.length > 0;
+  for (const state of records.states) {
+    if (!Number.isFinite(state.startSamples)
+        || !Number.isFinite(state.durationSamples)
+        || state.durationSamples <= 0) continue;
+    const start = state.startSamples;
+    const end = start + state.durationSamples;
+    const boundaries = [start, end];
+    for (const activity of activities) {
+      const activityEnd = activity.startSamples + activity.durationSamples;
+      if (activityEnd <= start) continue;
+      if (activity.startSamples >= end) break;
+      boundaries.push(Math.max(start, activity.startSamples));
+      boundaries.push(Math.min(end, activityEnd));
+    }
+    boundaries.sort((a, b) => a - b);
+    const uniqueBoundaries = boundaries.filter(
+      (value, index) => index === 0 || value !== boundaries[index - 1]);
+    for (let index = 0; index + 1 < uniqueBoundaries.length; index += 1) {
+      const segmentStart = uniqueBoundaries[index];
+      const segmentEnd = uniqueBoundaries[index + 1];
+      if (segmentEnd <= segmentStart) continue;
+      const activity = activityAt(activities, segmentStart);
+      const point = coordinatePoint({
+        ...state,
+        startSamples: segmentStart,
+        durationSamples: segmentEnd - segmentStart,
+        audioActive: hasActivityTimeline
+          ? Boolean(activity) && activity.active !== false
+          : true,
+        peakSample: activity?.peakSample || 0,
+      }, header);
+      if (point) points.push(point);
+    }
+  }
+  points.sort((a, b) => a.time - b.time);
   return points;
 }
 
+function coordinateRecords() {
+  return { header: null, states: [], activities: [], legacy: [] };
+}
+
 function parseCoordinates(text) {
-  const points = [];
-  let ordered = true;
-  let previousTime = -Infinity;
+  const records = coordinateRecords();
   for (const [index, raw] of text.split(/\r?\n/).entries()) {
-    const point = parseCoordinateLine(raw.trim(), index + 1);
-    if (!point) continue;
-    ordered = ordered && point.time >= previousTime;
-    previousTime = point.time;
-    points.push(point);
+    parseCoordinateLine(raw.trim(), index + 1, records);
   }
-  return finishCoordinatePoints(points, ordered);
+  return finishCoordinateRecords(records);
 }
 
 async function parseCoordinatesFile(file) {
   if (file.size < STREAMING_JSON_THRESHOLD_BYTES || !file.stream) {
     return parseCoordinates(await file.text());
   }
-  const points = [];
+  const records = coordinateRecords();
   const reader = file.stream().getReader();
   const decoder = new TextDecoder();
   let remainder = "";
   let lineNumber = 0;
-  let previousTime = -Infinity;
-  let ordered = true;
   while (true) {
     const { value, done } = await reader.read();
     const text = remainder + decoder.decode(value || new Uint8Array(), {
@@ -417,19 +527,14 @@ async function parseCoordinatesFile(file) {
     remainder = done ? "" : lines.pop();
     for (const raw of lines) {
       lineNumber += 1;
-      const point = parseCoordinateLine(raw.trim(), lineNumber);
-      if (!point) continue;
-      ordered = ordered && point.time >= previousTime;
-      previousTime = point.time;
-      points.push(point);
+      parseCoordinateLine(raw.trim(), lineNumber, records);
     }
     if (done) break;
   }
   if (remainder) {
-    const point = parseCoordinateLine(remainder.trim(), lineNumber + 1);
-    if (point) points.push(point);
+    parseCoordinateLine(remainder.trim(), lineNumber + 1, records);
   }
-  return finishCoordinatePoints(points, ordered);
+  return finishCoordinateRecords(records);
 }
 
 function findStaticCoordinate(points) {
@@ -475,6 +580,7 @@ async function loadFiles(files, folderLabel) {
   for (const object of state.objects) {
     releaseAudioAsset(object.audio);
     object.gain.disconnect();
+    object.metadataGain.disconnect();
     if (object.panner) object.panner.disconnect();
   }
   for (const bed of state.beds) disconnectBed(bed);
@@ -551,6 +657,8 @@ async function loadFiles(files, folderLabel) {
         staticPosition,
         enabled: true,
         gain: state.context.createGain(),
+        metadataGain: state.context.createGain(),
+        lastMetadataGain: null,
         panner,
         lastPan: 0,
         hasPanPosition: false,
@@ -580,12 +688,13 @@ async function loadFiles(files, folderLabel) {
     if (object.audio.kind === "media") {
       object.audio.mediaNode.connect(object.gain);
     }
+    object.gain.connect(object.metadataGain);
     if (object.panner) {
       object.panner.pan.value = 0;
-      object.gain.connect(object.panner);
+      object.metadataGain.connect(object.panner);
       object.panner.connect(state.masterGain);
     } else {
-      object.gain.connect(state.masterGain);
+      object.metadataGain.connect(state.masterGain);
     }
   }
   state.objects = decoded;
@@ -606,6 +715,7 @@ async function loadFiles(files, folderLabel) {
   ui.currentTime.textContent = formatTime(0);
   ui.objectCount.textContent = String(decoded.length);
   ui.sceneStatus.classList.add("hidden");
+  renderTimelineDecorations();
   renderObjectList();
   renderObjectsMaster();
 }
@@ -732,6 +842,10 @@ async function startPlayback() {
   if (!state.objects.length && !state.beds.length) return;
   await ensureAudio();
   if (state.offset >= state.duration - 0.001) state.offset = 0;
+  for (const object of state.objects) {
+    object.lastMetadataGain = null;
+    updateObjectMetadataGain(object, state.offset, true);
+  }
   state.generation += 1;
   const generation = state.generation;
   const streaming = streamingAudioAssets();
@@ -836,10 +950,141 @@ function seek(time) {
 
 function formatTime(value) {
   const safe = Number.isFinite(value) ? Math.max(0, value) : 0;
-  const minutes = Math.floor(safe / 60);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
   const seconds = Math.floor(safe % 60);
-  const millis = Math.floor((safe % 1) * 1000);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function timelineTickInterval(duration) {
+  if (!(duration > 0)) return 1;
+  const candidates = [
+    1, 2, 5, 10, 15, 30,
+    60, 120, 300, 600, 900, 1800,
+    3600, 7200, 10800, 21600,
+  ];
+  const targetMarks = 6;
+  let best = candidates[0];
+  let bestScore = Infinity;
+  for (const interval of candidates) {
+    const marks = duration / interval;
+    if (marks < 2 || marks > 12) continue;
+    const score = Math.abs(marks - targetMarks);
+    if (score < bestScore) {
+      best = interval;
+      bestScore = score;
+    }
+  }
+  if (bestScore === Infinity) {
+    return Math.max(1, duration / targetMarks);
+  }
+  return best;
+}
+
+function renderTimelineRuler() {
+  ui.timelineRuler.replaceChildren();
+  const duration = state.duration;
+  if (!(duration > 0)) return;
+  const interval = timelineTickInterval(duration);
+  const times = [0];
+  for (let time = interval; time < duration - interval * 0.35; time += interval) {
+    times.push(time);
+  }
+  if (duration > 0) times.push(duration);
+
+  for (const [index, time] of times.entries()) {
+    const tick = document.createElement("div");
+    const ratio = time / duration;
+    const isStart = index === 0;
+    const isEnd = index === times.length - 1;
+    tick.className = `tick${isStart ? " edge edge-start" : ""}${isEnd ? " edge edge-end" : ""}`;
+    tick.style.left = isEnd ? "" : `${(ratio * 100).toFixed(3)}%`;
+    tick.textContent = formatTime(time);
+    ui.timelineRuler.append(tick);
+  }
+}
+
+function objectAppearanceTimes(object) {
+  const points = object.coordinates;
+  if (!points.length) return [];
+  const times = [];
+  let active = false;
+  for (const point of points) {
+    if (point.visualActive) {
+      if (!active) {
+        times.push(point.time);
+        active = true;
+      }
+    } else {
+      active = false;
+    }
+  }
+  return times;
+}
+
+function renderTimelineEvents() {
+  ui.timelineEvents.replaceChildren();
+  const duration = state.duration;
+  if (!(duration > 0)) return;
+  const fragment = document.createDocumentFragment();
+  for (const object of state.objects) {
+    for (const time of objectAppearanceTimes(object)) {
+      if (time < 0 || time > duration) continue;
+      const mark = document.createElement("span");
+      mark.className = "mark";
+      mark.style.left = `${((time / duration) * 100).toFixed(3)}%`;
+      mark.style.background = object.color;
+      mark.style.color = object.color;
+      mark.title = `${object.name} · ${formatTime(time)}`;
+      fragment.append(mark);
+    }
+  }
+  ui.timelineEvents.append(fragment);
+}
+
+function renderTimelineDecorations() {
+  renderTimelineRuler();
+  renderTimelineEvents();
+}
+
+function timelinePointAt(object, time) {
+  const points = object.coordinates;
+  if (!points.length) return null;
+  const samplePosition = Math.floor(time * points[0].sampleRate);
+  let low = 0;
+  let high = points.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (points[mid].ptsSamples <= samplePosition) low = mid;
+    else high = mid - 1;
+  }
+  const point = points[low];
+  if (samplePosition < point.ptsSamples) return null;
+  if (point.durationSamples > 0
+      && samplePosition >= point.ptsSamples + point.durationSamples) {
+    return null;
+  }
+  return { point, index: low, samplePosition };
+}
+
+function objectMetadataGainAt(object, time) {
+  if (!state.objectSettings.metadataGainEnabled) return 1;
+  return timelinePointAt(object, time)?.point.metadataGainLinear ?? 1;
+}
+
+function updateObjectMetadataGain(object, time, immediate = false) {
+  if (!state.context) return;
+  const gain = objectMetadataGainAt(object, time);
+  if (object.lastMetadataGain !== null
+      && Math.abs(gain - object.lastMetadataGain) < 1e-7) return;
+  object.lastMetadataGain = gain;
+  const now = state.context.currentTime;
+  object.metadataGain.gain.cancelScheduledValues(now);
+  if (immediate) {
+    object.metadataGain.gain.setValueAtTime(gain, now);
+  } else {
+    object.metadataGain.gain.setTargetAtTime(gain, now, 0.008);
+  }
 }
 
 function positionAt(object, time) {
@@ -847,12 +1092,15 @@ function positionAt(object, time) {
   if (!points.length) return null;
   const sampleRate = points[0].sampleRate;
   const samplePosition = Math.floor(time * sampleRate);
-  let low = 0;
-  let high = points.length - 1;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (points[mid].ptsSamples <= samplePosition) low = mid;
-    else high = mid - 1;
+  const timeline = timelinePointAt(object, time);
+  let low = timeline?.index ?? 0;
+  if (!timeline && samplePosition >= points[0].ptsSamples) {
+    let high = points.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (points[mid].ptsSamples <= samplePosition) low = mid;
+      else high = mid - 1;
+    }
   }
   const current = points[low];
   const currentEnd = current.ptsSamples + current.durationSamples;
@@ -879,6 +1127,7 @@ function positionAt(object, time) {
   const interpolateToNext =
     !object.staticCoordinates
     && current.visualActive
+    && current.interpolation === "linear"
     && next !== current
     && next.visualActive
     && (current.durationSamples <= 0 || next.ptsSamples <= currentEnd);
@@ -894,6 +1143,10 @@ function positionAt(object, time) {
   const azimuth = position.azimuth + azDelta * mix;
   const elevation = position.elevation + (target.elevation - position.elevation) * mix;
   const distance = position.distance + (target.distance - position.distance) * mix;
+  const widthDeg = position.widthDeg + (target.widthDeg - position.widthDeg) * mix;
+  const heightDeg = position.heightDeg + (target.heightDeg - position.heightDeg) * mix;
+  const rotationDeg = position.rotationDeg
+    + (target.rotationDeg - position.rotationDeg) * mix;
   const az = azimuth * Math.PI / 180;
   const el = elevation * Math.PI / 180;
   const radius = Math.max(0, distance);
@@ -901,7 +1154,7 @@ function positionAt(object, time) {
     x: Math.sin(az) * Math.cos(el) * radius,
     y: Math.sin(el) * radius,
     z: Math.cos(az) * Math.cos(el) * radius,
-    azimuth, elevation, distance,
+    azimuth, elevation, distance, widthDeg, heightDeg, rotationDeg,
     visibility: Math.max(0, Math.min(1, visibility)),
   };
 }
@@ -957,6 +1210,8 @@ function updateObjectTrail(object, position, time) {
       z: position.z,
       time,
       visibility: position.visibility,
+      widthDeg: position.widthDeg,
+      heightDeg: position.heightDeg,
     });
     if (object.trail.length > OBJECT_TRAIL_MAX_POINTS) {
       object.trail.splice(
@@ -1001,21 +1256,37 @@ function drawObjectTrail(object, rect, time) {
       baseAlpha * life * current.visibility);
     ctx.lineWidth = Math.max(
       0.35,
-      objectMarkerRadius(object, to, audible) * 2 * life);
+      objectMarkerRadius(object, to, audible, current) * 2 * life);
     ctx.stroke();
   }
   ctx.lineCap = "butt";
   ctx.lineWidth = 1;
 }
 
-function objectMarkerRadius(object, projected, audible) {
-  const objectId = object.coordinates[0]?.objectId ?? "?";
-  const idLength = String(objectId).length;
-  const depthScale = state.objectSettings.depthScaleEnabled
+function projectedDepthScale(projected) {
+  return state.objectSettings.depthScaleEnabled
     ? Math.max(0.62, Math.min(1.42, projected.scale))
     : 1;
+}
+
+function normalizedMetadataSize(position) {
+  if (!state.objectSettings.metadataSizeEnabled || !position) return 1;
+  const angularExtent = Math.max(
+    0,
+    Number.isFinite(position.widthDeg) ? position.widthDeg : 0,
+    Number.isFinite(position.heightDeg) ? position.heightDeg : 0);
+  // DTS:X extents are angular values in the closed 0..360 degree range.
+  // Map that range to a bounded 1x..2x marker scale so a full-sphere
+  // extended source remains readable without covering the whole scene.
+  return 1 + Math.min(1, angularExtent / 360);
+}
+
+function objectMarkerRadius(object, projected, audible, position = null) {
+  const objectId = object.coordinates[0]?.objectId ?? "?";
+  const idLength = String(objectId).length;
   return Math.max(11, 8 + idLength * 2.6)
-    * depthScale
+    * projectedDepthScale(projected)
+    * normalizedMetadataSize(position)
     * (audible ? 1 : 0.8);
 }
 
@@ -1122,10 +1393,12 @@ function drawSpeakerLabel(item, rect) {
     : lfeChannel ? "#ff9f55" : "#48dce5";
   const active = item.bed.enabled && channel.enabled && !channel.silent;
   const label = project(center, rect);
+  const depthScale = projectedDepthScale(label);
+  const fontSize = Math.max(6, 12 * depthScale);
   ctx.globalAlpha = active
     ? 0.92
     : item.reference ? 0.5 : channel.silent ? 0.2 : 0.38;
-  ctx.font = `750 ${Math.max(8, 10 * label.scale).toFixed(1)}px Segoe UI`;
+  ctx.font = `750 ${fontSize.toFixed(1)}px Segoe UI`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = "rgba(2,7,10,0.92)";
@@ -1165,6 +1438,78 @@ function drawBedSpeakers(rect) {
   for (const speaker of ordered) drawSpeakerLabel(speaker, rect);
 }
 
+function sofaVertexColor(rgb, shade) {
+  const r = Math.round(Math.max(0, Math.min(255, rgb[0] * 255 * shade)));
+  const g = Math.round(Math.max(0, Math.min(255, rgb[1] * 255 * shade)));
+  const b = Math.round(Math.max(0, Math.min(255, rgb[2] * 255 * shade)));
+  return `rgb(${r},${g},${b})`;
+}
+
+function drawLoungeSofa(rect) {
+  if (!state.objectSettings.sofaEnabled) return;
+  const mesh = window.LOUNGE_SOFA_MESH;
+  if (!mesh?.vertices?.length || !mesh.triangles?.length) return;
+
+  const world = mesh.vertices.map((vertex) => ({
+    x: vertex[0],
+    y: vertex[1],
+    z: vertex[2],
+  }));
+  const rotated = world.map(rotate);
+  const projected = world.map((vertex) => project(vertex, rect));
+  const faces = [];
+  for (const triangle of mesh.triangles) {
+    const materialIndex = triangle[0];
+    const ia = triangle[1];
+    const ib = triangle[2];
+    const ic = triangle[3];
+    const a = rotated[ia];
+    const b = rotated[ib];
+    const c = rotated[ic];
+    if (!a || !b || !c) continue;
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - a.x;
+    const vy = c.y - a.y;
+    const vz = c.z - a.z;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    if (nz <= 0) continue;
+    const length = Math.hypot(nx, ny, nz) || 1;
+    const light = Math.max(0, (nx * 0.25 + ny * 0.75 + nz * 0.55) / length);
+    const shade = 0.34 + light * 0.78;
+    faces.push({
+      materialIndex,
+      shade,
+      depth: (a.z + b.z + c.z) / 3,
+      points: [projected[ia], projected[ib], projected[ic]],
+    });
+  }
+  faces.sort((left, right) => left.depth - right.depth);
+
+  ctx.save();
+  ctx.globalAlpha = 0.88;
+  ctx.lineJoin = "round";
+  for (const face of faces) {
+    const material = mesh.materials[face.materialIndex];
+    if (!material) continue;
+    const [p0, p1, p2] = face.points;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.closePath();
+    ctx.fillStyle = sofaVertexColor(material.rgb, face.shade);
+    ctx.fill();
+    ctx.strokeStyle = sofaVertexColor(material.rgb, face.shade * 0.62);
+    ctx.lineWidth = 0.7;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawScene() {
   const rect = resizeCanvas();
   ctx.clearRect(0, 0, rect.width, rect.height);
@@ -1178,12 +1523,14 @@ function drawScene() {
   line3d({ x: 0, y: -1, z: 0 }, { x: 0, y: 1.1, z: 0 }, rect, "rgba(120,220,152,.6)", 1.4);
   line3d({ x: 0, y: 0, z: -1.1 }, { x: 0, y: 0, z: 1.1 }, rect, "rgba(92,158,255,.6)", 1.4);
   drawUnitSphere(rect);
+  drawLoungeSofa(rect);
   drawBedSpeakers(rect);
 
   const time = playbackTime();
   const positioned = state.objects
     .map((object) => ({ object, position: positionAt(object, time) }));
   for (const item of positioned) {
+    updateObjectMetadataGain(item.object, time);
     updateStereoPan(item.object, item.position);
     updateObjectTrail(item.object, item.position, time);
     drawObjectTrail(item.object, rect, time);
@@ -1213,10 +1560,8 @@ function drawScene() {
 
     const objectId = object.coordinates[0]?.objectId ?? "?";
     const idText = String(objectId);
-    const depthScale = state.objectSettings.depthScaleEnabled
-      ? Math.max(0.62, Math.min(1.42, projected.scale))
-      : 1;
-    const radius = objectMarkerRadius(object, projected, audible);
+    const depthScale = projectedDepthScale(projected);
+    const radius = objectMarkerRadius(object, projected, audible, position);
     const glow = ctx.createRadialGradient(projected.x, projected.y, 0, projected.x, projected.y, radius * 3.4);
     glow.addColorStop(0, hexAlpha(object.color, 0.34 * alpha));
     glow.addColorStop(1, hexAlpha(object.color, 0));
@@ -1356,11 +1701,25 @@ ui.objectTrailLength.addEventListener("input", () => {
 ui.objectDepthScale.addEventListener("change", () => {
   state.objectSettings.depthScaleEnabled = ui.objectDepthScale.checked;
 });
+ui.objectMetadataSize.addEventListener("change", () => {
+  state.objectSettings.metadataSizeEnabled = ui.objectMetadataSize.checked;
+});
+ui.objectMetadataGain.addEventListener("change", () => {
+  state.objectSettings.metadataGainEnabled = ui.objectMetadataGain.checked;
+  const time = playbackTime();
+  for (const object of state.objects) {
+    object.lastMetadataGain = null;
+    updateObjectMetadataGain(object, time, true);
+  }
+});
 ui.objectGuideLines.addEventListener("change", () => {
   state.objectSettings.guideLinesEnabled = ui.objectGuideLines.checked;
 });
 ui.bedSpeakers.addEventListener("change", () => {
   state.objectSettings.bedSpeakersEnabled = ui.bedSpeakers.checked;
+});
+ui.centerSofa.addEventListener("change", () => {
+  state.objectSettings.sofaEnabled = ui.centerSofa.checked;
 });
 
 let drag = null;

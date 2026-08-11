@@ -291,12 +291,12 @@ input[type="range"] {
 .scene-status.hidden { display: none; }
 
 .transport {
-  min-height: 66px;
+  min-height: 86px;
   display: grid;
-  grid-template-columns: auto 72px minmax(100px, 1fr) 72px auto auto;
+  grid-template-columns: auto 74px minmax(100px, 1fr) 74px auto auto;
   gap: 13px;
   align-items: center;
-  padding: 12px 16px;
+  padding: 10px 16px 12px;
 }
 .play-button {
   width: 42px;
@@ -310,8 +310,86 @@ input[type="range"] {
   box-shadow: 0 0 26px rgba(72, 220, 229, 0.2);
 }
 .play-button:disabled { cursor: default; filter: grayscale(1); opacity: 0.35; }
-.timecode { color: #b8c0cb; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-align: center; }
-.timeline { width: 100%; }
+.timecode {
+  color: #b8c0cb;
+  font: 10px ui-monospace, SFMono-Regular, Consolas, monospace;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.timeline-block {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+}
+.timeline-ruler {
+  position: relative;
+  height: 16px;
+  margin: 0 1px;
+}
+.timeline-ruler .tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: #7f8b98;
+  font: 9px ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+}
+.timeline-ruler .tick::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 5px;
+  margin: 0 auto 2px;
+  background: rgba(148, 163, 178, 0.55);
+}
+.timeline-ruler .tick.edge {
+  transform: none;
+}
+.timeline-ruler .tick.edge-start {
+  left: 0 !important;
+  transform: none;
+  text-align: left;
+}
+.timeline-ruler .tick.edge-start::before {
+  margin-left: 0;
+}
+.timeline-ruler .tick.edge-end {
+  left: auto !important;
+  right: 0;
+  transform: none;
+  text-align: right;
+}
+.timeline-ruler .tick.edge-end::before {
+  margin-left: auto;
+  margin-right: 0;
+}
+.timeline {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--cyan);
+}
+.timeline-events {
+  position: relative;
+  height: 10px;
+  margin: 0 1px;
+  border-radius: 2px;
+  background: rgba(8, 14, 20, 0.45);
+  overflow: hidden;
+}
+.timeline-events .mark {
+  position: absolute;
+  top: 1px;
+  width: 2px;
+  height: 8px;
+  border-radius: 1px;
+  transform: translateX(-50%);
+  opacity: 0.9;
+  pointer-events: auto;
+  box-shadow: 0 0 6px currentColor;
+}
 .loop-toggle { display: flex; gap: 7px; align-items: center; color: var(--muted); font-size: 11px; cursor: pointer; }
 .loop-toggle input { accent-color: var(--cyan); }
 

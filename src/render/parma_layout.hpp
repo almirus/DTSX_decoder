@@ -24,6 +24,16 @@ struct ParmaLayoutControls final {
 [[nodiscard]] std::uint32_t parma_main_channel_count(
     std::uint32_t channel_mask) noexcept;
 
+// DTS_ParmaDec_GetChanLocation uses the enabled-bit order of the PARMA
+// channel mask.  These helpers keep metadata matrices in that order instead
+// of the container/layout order used by the PCM writer.
+[[nodiscard]] std::int32_t parma_channel_slot_from_speaker_mask(
+    std::uint32_t speaker_mask) noexcept;
+
+[[nodiscard]] std::int32_t parma_main_channel_ordinal(
+    std::uint32_t channel_mask,
+    std::uint32_t speaker_mask) noexcept;
+
 [[nodiscard]] bool parma_is_horizontal_layout(
     std::uint32_t channel_mask) noexcept;
 

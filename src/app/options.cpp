@@ -192,6 +192,8 @@ Options parse_options(int argc, wchar_t** argv) {
                 throw std::runtime_error(
                     "--render must be bed, objects or objects-only");
             }
+        } else if (arg == L"--upmix") {
+            options.upmix = true;
         } else if (arg == L"--overwrite") {
             options.overwrite = true;
         } else if (arg == L"-v" || arg == L"--verbose") {
@@ -203,6 +205,19 @@ Options parse_options(int argc, wchar_t** argv) {
 
     if (!options.help && !options.version && options.input.empty()) {
         throw std::runtime_error("--input is required");
+    }
+    if (options.upmix) {
+        if (options.layout.empty()) {
+            throw std::runtime_error(
+                "--upmix requires --layout (5.1.4 or 7.1.4)");
+        }
+        const auto upmix_layout = find_layout(options.layout);
+        if (!upmix_layout
+            || (upmix_layout->name != "5.1.4"
+                && upmix_layout->name != "7.1.4")) {
+            throw std::runtime_error(
+                "--upmix currently supports --layout 5.1.4 or 7.1.4");
+        }
     }
     return options;
 }
@@ -237,7 +252,7 @@ void print_help() {
         << "\n\nUsage:\n"
         << "  dtsx-decode -i INPUT [options]\n\n"
         << "Options:\n"
-        << "  -i, --input PATH       Input .mkv, .mp4, .m2ts, .dts or .dtshd\n"
+        << "  -i, --input PATH       Input .mkv, .mka, .mp4, .m2ts, .dts or .dtshd\n"
         << "  -o, --output PATH      Output PCM24 file\n"
         << "      --output-format FORMAT  wav or w64; default wav\n"
         << "      --mono-tracks      Write named mono WAVs to an INPUT_STEM folder\n"
@@ -251,6 +266,7 @@ void print_help() {
         << "      --sample-rate HZ   Output sample rate\n"
         << "      --duration TIME    Decode only this duration: 10s, 10m, 1h2m5s\n"
         << "      --render MODE      objects, objects-only or bed; default objects\n"
+        << "      --upmix            PARMA guided/blind upmix to 5.1.4/7.1.4\n"
         << "      --overwrite        Replace existing output\n"
         << "  -v, --verbose          Detailed diagnostics\n"
         << "      --version          Print version\n"
