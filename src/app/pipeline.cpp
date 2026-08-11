@@ -39,25 +39,153 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace dtsx_decode {
 namespace {
+
+template <typename T>
+class OrderedDecodeSlot final {
+public:
+    [[nodiscard]] bool submit(T&& value) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock, [this] {
+            return !value_.has_value() || stopped_;
+        });
+        if (stopped_) {
+            return false;
+        }
+        value_.emplace(std::move(value));
+        condition_.notify_all();
+        return true;
+    }
+
+    [[nodiscard]] bool take(T& value) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait(lock, [this] {
+            return value_.has_value() || finished_ || stopped_;
+        });
+        if (stopped_ || !value_.has_value()) {
+            return false;
+        }
+        value = std::move(*value_);
+        value_.reset();
+        condition_.notify_all();
+        return true;
+    }
+
+    void finish() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        finished_ = true;
+        condition_.notify_all();
+    }
+
+    void stop(std::exception_ptr error = nullptr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        if (error != nullptr && error_ == nullptr) {
+            error_ = error;
+        }
+        condition_.notify_all();
+    }
+
+    [[nodiscard]] bool stopped() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return stopped_;
+    }
+
+    [[nodiscard]] std::exception_ptr error() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return error_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::optional<T> value_;
+    bool finished_ = false;
+    bool stopped_ = false;
+    std::exception_ptr error_;
+};
+
+class BooleanTaskWorker final {
+public:
+    BooleanTaskWorker()
+        : thread_([this] { run(); }) {
+    }
+
+    ~BooleanTaskWorker() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+            condition_.notify_all();
+        }
+        thread_.join();
+    }
+
+    BooleanTaskWorker(const BooleanTaskWorker&) = delete;
+    BooleanTaskWorker& operator=(const BooleanTaskWorker&) = delete;
+
+    [[nodiscard]] std::future<bool> submit(
+        std::function<bool()> function) {
+        std::packaged_task<bool()> task(std::move(function));
+        std::future<bool> result = task.get_future();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (task_.has_value()) {
+                throw std::logic_error("parallel decode task overlap");
+            }
+            task_.emplace(std::move(task));
+        }
+        condition_.notify_all();
+        return result;
+    }
+
+private:
+    void run() {
+        for (;;) {
+            std::packaged_task<bool()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this] {
+                    return task_.has_value() || stopping_;
+                });
+                if (!task_.has_value()) {
+                    return;
+                }
+                task = std::move(*task_);
+                task_.reset();
+            }
+            task();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::optional<std::packaged_task<bool()>> task_;
+    bool stopping_ = false;
+    std::thread thread_;
+};
 
 std::wstring lower_extension(std::filesystem::path path) {
     std::wstring extension = path.extension().wstring();
@@ -3346,7 +3474,8 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
 
 void export_object_stems(
     const Options& options,
-    bool require_audio = true) {
+    bool require_audio = true,
+    bool show_progress = true) {
     DtsFrameReader reader(options);
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
@@ -3360,9 +3489,11 @@ void export_object_stems(
     const std::uint64_t input_size =
         std::filesystem::file_size(options.input, size_error);
     std::uint64_t input_bytes = 0U;
-    progress.update(
-        "objects",
-        size_error ? -1 : 0);
+    if (show_progress) {
+        progress.update(
+            "objects",
+            size_error ? -1 : 0);
+    }
 
     const auto advance_ignored_extension =
         [&sample_position, &last_extension_frame_duration](
@@ -3389,13 +3520,52 @@ void export_object_stems(
             sample_position += duration;
         };
 
-    while (reader.read(elementary)) {
+    struct StemWork final {
+        DecodedObjectAudioFrame decoded;
+        std::uint64_t sample_position = 0U;
+    };
+    const bool parallel = options.threads != 1U;
+    OrderedDecodeSlot<StemWork> slot;
+    const auto write_frame = [&](StemWork& work) {
+        if (writer == nullptr) {
+            writer = std::make_unique<ObjectStemWriter>(
+                options.objects_output_directory,
+                work.decoded.sample_rate,
+                options.overwrite);
+        }
+        if (!writer->write(
+                work.decoded,
+                work.sample_position,
+                work.decoded.samples_per_channel)) {
+            throw std::runtime_error(
+                "decoded object waveform channel is unavailable");
+        }
+        wrote_audio = writer->has_audio_stems();
+    };
+    std::thread writer_thread;
+    if (parallel) {
+        writer_thread = std::thread([&] {
+            try {
+                StemWork work;
+                while (slot.take(work)) {
+                    write_frame(work);
+                }
+            } catch (...) {
+                slot.stop(std::current_exception());
+            }
+        });
+    }
+
+    try {
+    while (!slot.stopped() && reader.read(elementary)) {
         input_bytes += elementary.bytes.size();
-        progress.update(
-            "objects",
-            size_error
-                ? -1
-                : decode_percent(input_bytes, input_size));
+        if (show_progress) {
+            progress.update(
+                "objects",
+                size_error
+                    ? -1
+                    : decode_percent(input_bytes, input_size));
+        }
         if (elementary.packing
                 != dtsx::StreamPacking::ExtensionBigEndian
             && elementary.packing
@@ -3432,26 +3602,33 @@ void export_object_stems(
             continue;
         }
         last_extension_frame_duration = decoded.samples_per_channel;
-        if (writer == nullptr) {
-            writer = std::make_unique<ObjectStemWriter>(
-                options.objects_output_directory,
-                decoded.sample_rate,
-                options.overwrite);
+        const std::uint32_t frame_duration = decoded.samples_per_channel;
+        StemWork work{std::move(decoded), sample_position};
+        if (parallel) {
+            if (!slot.submit(std::move(work))) {
+                break;
+            }
+        } else {
+            write_frame(work);
         }
-        if (!writer->write(
-                decoded,
-                sample_position,
-                decoded.samples_per_channel)) {
-            throw std::runtime_error(
-                "decoded object waveform channel is unavailable");
-        }
-        sample_position += decoded.samples_per_channel;
-        wrote_audio = writer->has_audio_stems();
+        sample_position += frame_duration;
+    }
+    } catch (...) {
+        slot.stop(std::current_exception());
+    }
+    if (parallel) {
+        slot.finish();
+        writer_thread.join();
+    }
+    if (const std::exception_ptr error = slot.error()) {
+        std::rethrow_exception(error);
     }
     if (writer != nullptr) {
         writer->close();
     }
-    progress.done("objects");
+    if (show_progress) {
+        progress.done("objects");
+    }
     if (require_audio && !wrote_audio) {
         throw std::runtime_error(
             "no decodable DTS:X object waveforms were found");
@@ -3867,6 +4044,11 @@ std::uint64_t render_object_stream(
         size_error ? -1 : 0);
     std::unique_ptr<WavWriter> writer;
     std::unique_ptr<MonoTrackWriter> mono_writer;
+    const bool parallel_decode = options.threads != 1U;
+    const std::unique_ptr<BooleanTaskWorker> bed_worker =
+        parallel_decode
+        ? std::make_unique<BooleanTaskWorker>()
+        : nullptr;
     std::uint64_t frame_limit =
         std::numeric_limits<std::uint64_t>::max();
     const auto write_limited =
@@ -3903,11 +4085,35 @@ std::uint64_t render_object_stream(
             continue;
         }
         DcaDecodedBed decoded_bed;
-        const bool decoded_bed_available =
-            dca_bed_decoder.decode_extension(
-                elementary,
-                decoded_bed,
-                !options.upmix);
+        const auto lossy_base = make_xll_lossy_base(
+            dca_bed_decoder.decoded_core());
+        std::future<bool> decoded_bed_future;
+        bool decoded_bed_available = false;
+        if (parallel_decode) {
+            decoded_bed_future = bed_worker->submit(
+                [&dca_bed_decoder,
+                 &elementary,
+                 &decoded_bed,
+                 &options] {
+                    return dca_bed_decoder.decode_extension(
+                        elementary,
+                        decoded_bed,
+                        !options.upmix);
+                });
+        } else {
+            decoded_bed_available =
+                dca_bed_decoder.decode_extension(
+                    elementary,
+                    decoded_bed,
+                    !options.upmix);
+        }
+        DecodedObjectAudioFrame decoded;
+        const ObjectFrameDecodeResult decode_result =
+            decoder.decode(
+                elementary, decoded, lossy_base);
+        if (parallel_decode) {
+            decoded_bed_available = decoded_bed_future.get();
+        }
         std::vector<std::vector<std::int32_t>> upmix_dca_bed;
         std::uint32_t upmix_dca_activity_mask = 0U;
         const bool upmix_dca_ready =
@@ -3922,12 +4128,6 @@ std::uint64_t render_object_stream(
             upmix_dca_activity_mask =
                 decoded_bed.speaker_activity_mask;
         }
-        DecodedObjectAudioFrame decoded;
-        const auto lossy_base = make_xll_lossy_base(
-            dca_bed_decoder.decoded_core());
-        const ObjectFrameDecodeResult decode_result =
-            decoder.decode(
-                elementary, decoded, lossy_base);
         if (decode_result != ObjectFrameDecodeResult::Decoded) {
             if (decoded_bed_available) {
                 decoded.bed_channels =
@@ -4373,10 +4573,28 @@ int run_pipeline(const Options& requested_options) {
         dump_metadata(decode_options, options.metadata_output);
     }
     if (options.objects_output_directory_explicit) {
+        std::future<void> object_stems_future;
+        bool object_stems_parallel = false;
         if (capacity.any_objects || capacity.any_waveforms) {
-            export_object_stems(
-                decode_options,
-                !options.objects_output_bed);
+            object_stems_parallel =
+                options.objects_output_bed
+                && options.threads != 1U;
+            if (object_stems_parallel) {
+                Options stem_options = decode_options;
+                stem_options.threads = 1U;
+                object_stems_future = std::async(
+                    std::launch::async,
+                    [stem_options, &options] {
+                        export_object_stems(
+                            stem_options,
+                            !options.objects_output_bed,
+                            false);
+                    });
+            } else {
+                export_object_stems(
+                    decode_options,
+                    !options.objects_output_bed);
+            }
         } else {
             std::cerr
                 << "warning: no object waveforms found; skipping WAV export\n";
@@ -4399,6 +4617,9 @@ int run_pipeline(const Options& requested_options) {
                 options.objects_output_directory / L"bed.wav";
             std::uint32_t bed_sample_rate = 0U;
             Options bed_decode_options = decode_options;
+            if (object_stems_parallel) {
+                bed_decode_options.threads = 1U;
+            }
             bed_decode_options.output_format = OutputFormat::Wav;
             bed_decode_options.mono_tracks = false;
             bed_decode_options.dolby_output = false;
@@ -4417,12 +4638,17 @@ int run_pipeline(const Options& requested_options) {
                 bed_path,
                 RenderMode::BedWithoutObjects,
                 &bed_sample_rate);
+            if (object_stems_parallel) {
+                object_stems_future.get();
+            }
             write_object_bed_descriptor(
                 options.objects_output_directory / L"bed.json",
                 *standard_bed_layout,
                 bed_sample_rate,
                 bed_frames,
                 options.overwrite);
+        } else if (object_stems_parallel) {
+            object_stems_future.get();
         }
         if (object_stems_only) {
             return 0;

@@ -27,6 +27,7 @@ struct Options {
     std::string layout;
     std::uint32_t channels_check = 0;
     std::uint32_t sample_rate = 0;
+    std::uint32_t threads = 0;
     std::uint64_t duration_seconds = 0;
     unsigned audio_track = 0;
     RenderMode render_mode = RenderMode::Objects;

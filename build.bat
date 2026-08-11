@@ -2,6 +2,8 @@
 setlocal
 chcp 65001 >nul
 set "ROOT=%~dp0"
+set "OUTPUT_EXE=%~1"
+if not defined OUTPUT_EXE set "OUTPUT_EXE=bin\Release\dtsx-decode.exe"
 
 set "VSDEV=%ProgramFiles%\Microsoft Visual Studio\18\Insiders\Common7\Tools\VsDevCmd.bat"
 if not exist "%VSDEV%" set "VSDEV=%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
@@ -169,9 +171,9 @@ cl /nologo ^
   bin\obj\dcadec\lbr_decoder.obj bin\obj\dcadec\ta.obj ^
   bin\obj\dcadec\xll_decoder.obj ^
   bin\obj\dtsx-decode\p2_resources.res ^
-  /Fe:"bin\Release\dtsx-decode.exe"
+  /Fe:"%OUTPUT_EXE%"
 if errorlevel 1 exit /b 1
 
-echo Build: bin\Release\dtsx-decode.exe
+echo Build: %OUTPUT_EXE%
 popd
 exit /b 0

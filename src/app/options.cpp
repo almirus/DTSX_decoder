@@ -172,6 +172,12 @@ Options parse_options(int argc, wchar_t** argv) {
         } else if (arg == L"--sample-rate") {
             options.sample_rate =
                 parse_u32(require_value(argc, argv, i, "--sample-rate"), "--sample-rate");
+        } else if (arg == L"--threads") {
+            options.threads =
+                parse_u32(require_value(argc, argv, i, "--threads"), "--threads");
+            if (options.threads < 1U || options.threads > 2U) {
+                throw std::runtime_error("--threads must be 1 or 2");
+            }
         } else if (arg == L"--duration") {
             options.duration_seconds =
                 parse_duration(require_value(argc, argv, i, "--duration"));
@@ -264,6 +270,7 @@ void print_help() {
         << "      --layout NAME      Output layout; default: DTS:X metadata layout\n"
         << "      --channels N       Validate layout channel count only\n"
         << "      --sample-rate HZ   Output sample rate\n"
+        << "      --threads N        Decode pipeline threads: 1 or 2; default 2\n"
         << "      --duration TIME    Decode only this duration: 10s, 10m, 1h2m5s\n"
         << "      --render MODE      objects, objects-only or bed; default objects\n"
         << "      --upmix            PARMA guided/blind upmix to 5.1.4/7.1.4\n"
