@@ -81,6 +81,13 @@ public:
     }
 
 private:
+    struct AssociatedWaveformLayout final {
+        std::uint8_t association_index = 0U;
+        std::uint32_t base_channel = 0U;
+        std::uint32_t channel_count = 0U;
+        bool renderer_auxiliary_metadata_present = false;
+    };
+
     std::vector<dtsx::XllFrameDecoder> xll_decoders_;
     std::vector<std::vector<dtsx::XllFrameDecoder>>
         uhd_xll_decoders_;
@@ -89,6 +96,9 @@ private:
         combined_mix_metadata_state_;
     std::vector<bool> combined_mix_metadata_valid_;
     std::vector<std::uint32_t> waveform_base_by_id_state_;
+    std::vector<AssociatedWaveformLayout>
+        associated_waveform_layout_state_;
+    std::uint32_t waveform_channel_count_state_ = 0U;
     std::vector<dtsx::ObjectMetadataBlock> object_state_;
     std::uint32_t metadata_speaker_activity_mask_ = 0;
     bool alternative_presentation_gain_present_ = false;

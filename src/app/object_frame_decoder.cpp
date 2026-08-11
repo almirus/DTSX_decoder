@@ -904,6 +904,190 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         }
 
     }
+    if (!decoded_uhd_waveform_ranges.empty()) {
+        bool unique_associations = true;
+        std::array<bool, 256U> current_associations{};
+        for (const AssociatedWaveformRange& range :
+             decoded_uhd_waveform_ranges) {
+            if (current_associations[range.association_index]) {
+                unique_associations = false;
+                break;
+            }
+            current_associations[range.association_index] = true;
+        }
+
+        bool registered_subset = unique_associations
+            && !associated_waveform_layout_state_.empty();
+        if (registered_subset) {
+            for (const AssociatedWaveformRange& current :
+                 decoded_uhd_waveform_ranges) {
+                const auto registered = std::find_if(
+                    associated_waveform_layout_state_.begin(),
+                    associated_waveform_layout_state_.end(),
+                    [&current](const AssociatedWaveformLayout& candidate) {
+                        return candidate.association_index
+                                   == current.association_index
+                            && candidate.channel_count
+                                   == current.channel_count;
+                    });
+                if (registered
+                    == associated_waveform_layout_state_.end()) {
+                    registered_subset = false;
+                    break;
+                }
+            }
+        }
+
+        if (registered_subset
+            && waveform_channel_count_state_ != 0U) {
+            const std::size_t current_channel_count =
+                decoded.waveform_channels.size();
+            std::vector<bool> claimed_current(
+                current_channel_count, false);
+            std::vector<bool> reserved_registered(
+                waveform_channel_count_state_, false);
+            bool valid_layout = true;
+            for (const AssociatedWaveformLayout& registered :
+                 associated_waveform_layout_state_) {
+                if (registered.base_channel
+                        + registered.channel_count
+                    > waveform_channel_count_state_) {
+                    valid_layout = false;
+                    break;
+                }
+                for (std::uint32_t channel = 0U;
+                     channel < registered.channel_count;
+                     ++channel) {
+                    reserved_registered[
+                        registered.base_channel + channel] = true;
+                }
+            }
+            for (const AssociatedWaveformRange& current :
+                 decoded_uhd_waveform_ranges) {
+                if (current.base_channel + current.channel_count
+                    > current_channel_count) {
+                    valid_layout = false;
+                    break;
+                }
+                for (std::uint32_t channel = 0U;
+                     channel < current.channel_count;
+                     ++channel) {
+                    claimed_current[
+                        current.base_channel + channel] = true;
+                }
+            }
+            for (std::size_t channel = 0U;
+                 valid_layout && channel < current_channel_count;
+                 ++channel) {
+                if (!claimed_current[channel]
+                    && channel < reserved_registered.size()
+                    && reserved_registered[channel]) {
+                    valid_layout = false;
+                }
+            }
+
+            if (valid_layout) {
+                std::vector<std::vector<std::int32_t>> channels(
+                    waveform_channel_count_state_,
+                    std::vector<std::int32_t>(
+                        decoded.samples_per_channel, 0));
+                std::vector<std::uint32_t> speaker_masks(
+                    waveform_channel_count_state_, 0U);
+                std::vector<std::uint32_t> source_masks(
+                    waveform_channel_count_state_, 0U);
+                std::vector<bool> supplemental(
+                    waveform_channel_count_state_, false);
+                const auto move_channel =
+                    [&](std::size_t source, std::size_t destination) {
+                        channels[destination] = std::move(
+                            decoded.waveform_channels[source]);
+                        if (source
+                            < decoded.waveform_speaker_masks.size()) {
+                            speaker_masks[destination] =
+                                decoded.waveform_speaker_masks[source];
+                        }
+                        if (source
+                            < decoded.waveform_source_activity_masks.size()) {
+                            source_masks[destination] =
+                                decoded.waveform_source_activity_masks[source];
+                        }
+                        if (source
+                            < decoded.waveform_is_supplemental.size()) {
+                            supplemental[destination] =
+                                decoded.waveform_is_supplemental[source];
+                        }
+                    };
+                for (std::size_t channel = 0U;
+                     channel < current_channel_count;
+                     ++channel) {
+                    if (!claimed_current[channel]
+                        && channel < channels.size()) {
+                        move_channel(channel, channel);
+                    }
+                }
+                for (const AssociatedWaveformRange& current :
+                     decoded_uhd_waveform_ranges) {
+                    const auto registered = std::find_if(
+                        associated_waveform_layout_state_.begin(),
+                        associated_waveform_layout_state_.end(),
+                        [&current](
+                            const AssociatedWaveformLayout& candidate) {
+                            return candidate.association_index
+                                == current.association_index;
+                        });
+                    for (std::uint32_t channel = 0U;
+                         channel < current.channel_count;
+                         ++channel) {
+                        move_channel(
+                            current.base_channel + channel,
+                            registered->base_channel + channel);
+                    }
+                }
+                decoded.waveform_channels = std::move(channels);
+                decoded.waveform_speaker_masks =
+                    std::move(speaker_masks);
+                decoded.waveform_source_activity_masks =
+                    std::move(source_masks);
+                decoded.waveform_is_supplemental =
+                    std::move(supplemental);
+                decoded_uhd_waveform_bases.clear();
+                decoded_uhd_waveform_ranges.clear();
+                for (const AssociatedWaveformLayout& registered :
+                     associated_waveform_layout_state_) {
+                    decoded_uhd_waveform_bases.emplace_back(
+                        registered.association_index,
+                        registered.base_channel);
+                    decoded_uhd_waveform_ranges.push_back(
+                        AssociatedWaveformRange{
+                            registered.association_index,
+                            registered.base_channel,
+                            registered.channel_count,
+                            registered
+                                .renderer_auxiliary_metadata_present});
+                }
+            } else {
+                registered_subset = false;
+            }
+        }
+
+        if (!registered_subset) {
+            associated_waveform_layout_state_.clear();
+            associated_waveform_layout_state_.reserve(
+                decoded_uhd_waveform_ranges.size());
+            for (const AssociatedWaveformRange& range :
+                 decoded_uhd_waveform_ranges) {
+                associated_waveform_layout_state_.push_back(
+                    AssociatedWaveformLayout{
+                        range.association_index,
+                        range.base_channel,
+                        range.channel_count,
+                        range.renderer_auxiliary_metadata_present});
+            }
+            waveform_channel_count_state_ =
+                static_cast<std::uint32_t>(
+                    decoded.waveform_channels.size());
+        }
+    }
     if (!decoded_asset_bases.empty()
         || !decoded_uhd_waveform_bases.empty()) {
         decoded.waveform_base_by_id.assign(
