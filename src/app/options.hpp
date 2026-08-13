@@ -25,7 +25,7 @@ struct Options {
     std::filesystem::path objects_output_directory;
     std::filesystem::path mono_tracks_directory;
     std::string layout;
-    std::uint32_t channels_check = 0;
+    std::string imax_small_speakers = "all";
     std::uint32_t sample_rate = 0;
     std::uint32_t threads = 0;
     std::uint64_t duration_seconds = 0;
@@ -45,6 +45,7 @@ struct Options {
     bool probe = false;
     bool full_probe = false;
     bool upmix = false;
+    bool imax_dsp = false;
     bool audio_track_explicit = false;
     bool audio_track_optional = false;
 };

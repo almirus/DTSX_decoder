@@ -225,6 +225,9 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 asset_index)) {
             return ObjectFrameDecodeResult::Malformed;
         }
+        decoded.imax_enhanced =
+            decoded.imax_enhanced
+            || asset.type1_certified_content;
         if ((asset.coding_components & (1U << 9U)) == 0U) {
             continue;
         }
@@ -561,9 +564,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         if (xll.extension.present) {
             decoded.dtsx_extension_sync_word =
                 xll.extension.sync_word;
-            if (xll.extension.sync_word == 0xF14000D0U) {
-                decoded.imax_enhanced = true;
-            }
         }
         xll_pbr.erase(
             xll_pbr.begin(),

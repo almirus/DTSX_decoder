@@ -12,6 +12,9 @@ namespace dtsx {
 struct ExssAssetSummary final {
     std::uint32_t header_size = 0;
     std::uint8_t asset_index = 0;
+    bool content_type_present = false;
+    std::uint8_t content_type = 0;
+    bool type1_certified_content = false;
     std::uint8_t object_audio_type = 0;
     std::uint32_t sample_rate = 0;
     std::uint32_t channel_count = 0;

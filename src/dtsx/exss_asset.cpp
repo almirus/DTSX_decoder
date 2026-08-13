@@ -24,7 +24,16 @@ bool unpack_exss_asset_summary(bitstream::Cursor& source,
     bool mix_metadata_present = false;
     if (exss.static_fields_present) {
         if (source.extract_unsigned(1U) != 0U) {
-            (void)source.extract_unsigned(4U);
+            // ARCAM AVRx0 firmware, DTS Decoder SDK 3.90.50.1:
+            // dtsxSubstreamParseAsset stores this four-bit content-type
+            // value and raises its dedicated Type1-certified flag exactly
+            // when the value is 13.  This is the native IMAX-content
+            // classifier consumed by the AVR controller.
+            asset.content_type_present = true;
+            asset.content_type = static_cast<std::uint8_t>(
+                source.extract_unsigned(4U));
+            asset.type1_certified_content =
+                asset.content_type == 13U;
         }
         if (source.extract_unsigned(1U) != 0U) {
             source.fast_forward(24);

@@ -535,7 +535,15 @@ void decode_p2_stream(
                 planar, frames_to_write);
         }
         encoded_byte_count += frame.bytes.size();
-        if (!size_error && elementary_size != 0U) {
+        if (options.duration_seconds != 0U) {
+            progress.update(
+                "decode P2",
+                static_cast<int>(
+                    std::min<std::uint64_t>(
+                        99U,
+                        writer->frames_written() * 100U
+                            / frame_limit)));
+        } else if (!size_error && elementary_size != 0U) {
             progress.update(
                 "decode P2",
                 static_cast<int>(

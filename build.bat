@@ -84,7 +84,8 @@ cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   src\io\ffmpeg.cpp src\io\object_sidecar_writer.cpp ^
   src\io\object_stem_writer.cpp src\io\process.cpp src\io\wav_writer.cpp ^
   src\io\p2_decoder.cpp ^
-  src\render\gain_interpolator.cpp src\render\layout_panner.cpp ^
+  src\render\gain_interpolator.cpp src\render\imax_post_processor.cpp ^
+  src\render\layout_panner.cpp ^
   src\render\parma_layout.cpp src\render\parma_blind_config.cpp ^
   src\render\parma_guided_controls.cpp ^
   src\render\parma_guided_topology.cpp ^
@@ -145,6 +146,7 @@ cl /nologo ^
   bin\obj\dtsx-decode\wav_writer.obj ^
   bin\obj\dtsx-decode\p2_decoder.obj ^
   bin\obj\dtsx-decode\gain_interpolator.obj ^
+  bin\obj\dtsx-decode\imax_post_processor.obj ^
   bin\obj\dtsx-decode\layout_panner.obj ^
   bin\obj\dtsx-decode\parma_layout.obj ^
   bin\obj\dtsx-decode\parma_blind_config.obj ^

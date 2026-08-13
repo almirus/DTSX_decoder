@@ -27,6 +27,7 @@
 #include "../io/p2_decoder.hpp"
 #include "../render/object_audio_renderer.hpp"
 #include "../render/object_gain.hpp"
+#include "../render/imax_post_processor.hpp"
 #include "../render/parma_blind_renderer.hpp"
 #include "../render/parma_filterbank.hpp"
 #include "../render/parma_guided_controls.hpp"
@@ -2592,6 +2593,12 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
         throw std::runtime_error("cannot open metadata output");
     }
     DtsFrameReader reader(options);
+    ProgressReporter progress;
+    std::error_code size_error;
+    const std::uint64_t input_size =
+        std::filesystem::file_size(options.input, size_error);
+    std::uint64_t input_bytes = 0U;
+    progress.update("metadata", size_error ? -1 : 0);
     std::unique_ptr<ObjectSidecarWriter> coordinate_output;
     dtsx::ElementaryFrame frame;
     std::uint64_t frame_index = 0;
@@ -2604,6 +2611,12 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
     ObjectFrameDecoder coordinate_decoder;
     DcaBedDecoder coordinate_bed_decoder;
     while (reader.read(frame)) {
+        input_bytes += frame.bytes.size();
+        progress.update(
+            "metadata",
+            size_error
+                ? -1
+                : decode_percent(input_bytes, input_size));
         output << "{\"frameIndex\":" << frame_index++
                << ",\"streamOffset\":" << frame.stream_offset
                << ",\"packing\":"
@@ -2680,6 +2693,14 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
                            << ",\"headerBytes\":" << asset.header_size
                            << ",\"assetIndex\":"
                            << static_cast<unsigned>(asset.asset_index)
+                           << ",\"contentTypePresent\":"
+                           << (asset.content_type_present
+                                   ? "true" : "false")
+                           << ",\"contentType\":"
+                           << static_cast<unsigned>(asset.content_type)
+                           << ",\"type1CertifiedContent\":"
+                           << (asset.type1_certified_content
+                                   ? "true" : "false")
                            << ",\"objectAudioType\":"
                            << static_cast<unsigned>(
                                   (asset.object_audio_type != 0U
@@ -3483,6 +3504,7 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
     if (coordinate_output != nullptr) {
         coordinate_output->close();
     }
+    progress.done("metadata");
 }
 
 void export_object_stems(
@@ -4047,6 +4069,9 @@ std::uint64_t render_object_stream(
         ? std::make_unique<ParmaGuidedRenderer>()
         : nullptr;
     ParmaObjectDelay parma_object_delay;
+    ImaxPostProcessor imax_post_processor;
+    bool imax_stream_active = false;
+    bool imax_profile_reported = false;
     ProgressReporter progress;
     std::error_code size_error;
     const std::uint64_t elementary_size =
@@ -4065,7 +4090,7 @@ std::uint64_t render_object_stream(
     std::uint64_t frame_limit =
         std::numeric_limits<std::uint64_t>::max();
     const auto write_limited =
-        [&writer, &mono_writer, &frame_limit](
+        [&writer, &mono_writer, &frame_limit, &options, &progress](
             const std::vector<std::vector<std::int32_t>>& channels) {
             const std::uint64_t remaining =
                 frame_limit - std::min(
@@ -4080,16 +4105,24 @@ std::uint64_t render_object_stream(
                 mono_writer->write_planar_24(
                     channels, frames_to_write);
             }
+            if (options.duration_seconds != 0U) {
+                progress.update(
+                    "decode",
+                    decode_percent(
+                        writer->frames_written(), frame_limit));
+            }
             return writer->frames_written() >= frame_limit;
         };
     dtsx::ElementaryFrame elementary;
     while (reader.read(elementary)) {
         elementary_bytes += elementary.bytes.size();
-        progress.update(
-            "decode",
-            size_error
-                ? -1
-                : decode_percent(elementary_bytes, elementary_size));
+        if (options.duration_seconds == 0U) {
+            progress.update(
+                "decode",
+                size_error
+                    ? -1
+                    : decode_percent(elementary_bytes, elementary_size));
+        }
         if (elementary.packing
                 != dtsx::StreamPacking::ExtensionBigEndian
             && elementary.packing
@@ -4124,6 +4157,8 @@ std::uint64_t render_object_stream(
         const ObjectFrameDecodeResult decode_result =
             decoder.decode(
                 elementary, decoded, lossy_base);
+        imax_stream_active =
+            imax_stream_active || decoded.imax_enhanced;
         if (parallel_decode) {
             decoded_bed_available = decoded_bed_future.get();
         }
@@ -4215,6 +4250,28 @@ std::uint64_t render_object_stream(
             frame_limit =
                 duration_frame_limit(options, decoded.sample_rate);
         }
+        const auto apply_imax_profile =
+            [&](std::vector<std::vector<std::int32_t>>& channels) {
+                if (!options.imax_dsp || !imax_stream_active) {
+                    return;
+                }
+                if (!imax_post_processor.process(
+                        channels,
+                        layout,
+                        decoded.sample_rate,
+                        true,
+                        options.imax_small_speakers)) {
+                    throw std::runtime_error(
+                        "IMAX DSP profile cannot process the output layout");
+                }
+                if (options.verbose && !imax_profile_reported) {
+                    std::cerr
+                        << "IMAX DSP: recovered AVRx0 profile; exact 70 Hz "
+                        << "LR4 crossover, relative +10 dB LFE trim; small="
+                        << options.imax_small_speakers << '\n';
+                    imax_profile_reported = true;
+                }
+            };
         if (render_mode != RenderMode::Bed
             && !decoded.objects.empty()
             && !renderer.remove_embedded_object_fold_down(decoded)) {
@@ -4284,12 +4341,14 @@ std::uint64_t render_object_stream(
         }
         if (render_mode == RenderMode::Bed
             || render_mode == RenderMode::BedWithoutObjects) {
+            apply_imax_profile(bed);
             if (write_limited(bed)) {
                 break;
             }
             continue;
         }
         if (rendered_supplemental && decoded.objects.empty()) {
+            apply_imax_profile(bed);
             if (write_limited(bed)) {
                 break;
             }
@@ -4316,6 +4375,7 @@ std::uint64_t render_object_stream(
             } else {
             // Preserve a usable channel bed when an object is unresolved or
             // its metadata cannot be rendered for the selected layout.
+                apply_imax_profile(bed);
                 if (write_limited(bed)) {
                     break;
                 }
@@ -4352,6 +4412,7 @@ std::uint64_t render_object_stream(
                                 mixed)));
             }
         }
+        apply_imax_profile(rendered);
         apply_native_object_output_limiters(rendered);
         if (write_limited(rendered)) {
             break;
@@ -4471,16 +4532,6 @@ int run_pipeline(const Options& requested_options) {
     probe.channel_layout = layout ? options.layout : std::string{};
     probe.codec_name = "dts";
 
-    if (options.probe
-        && options.channels_check != 0U
-        && !layout) {
-        throw std::runtime_error("--channels requires --layout");
-    }
-    if (layout
-        && options.channels_check != 0
-        && options.channels_check != layout->channels.size()) {
-        throw std::runtime_error("--channels does not match the selected layout");
-    }
     const std::uint32_t sample_rate = options.sample_rate;
     if (!options.probe && sample_rate != 0U
         && (sample_rate < 8000 || sample_rate > 384000)) {
@@ -4553,12 +4604,6 @@ int run_pipeline(const Options& requested_options) {
         probe.channels =
             static_cast<std::uint32_t>(layout->channels.size());
         probe.channel_layout = layout->name;
-    }
-    if (options.channels_check != 0U
-        && (!layout
-            || options.channels_check != layout->channels.size())) {
-        throw std::runtime_error(
-            "--channels does not match the selected layout");
     }
     std::string capacity_warning;
     if (layout) {

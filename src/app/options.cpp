@@ -105,7 +105,7 @@ std::uint64_t parse_duration(const std::wstring& value) {
 }
 
 const wchar_t* require_value(int argc, wchar_t** argv, int& i, const char* option) {
-    if (i + 1 >= argc) {
+    if (i + 1 >= argc || argv[i + 1][0] == L'-') {
         throw std::runtime_error(std::string("missing value for ") + option);
     }
     return argv[++i];
@@ -166,9 +166,6 @@ Options parse_options(int argc, wchar_t** argv) {
             options.objects_output_bed = true;
         } else if (arg == L"--layout") {
             options.layout = narrow_ascii(require_value(argc, argv, i, "--layout"), "--layout");
-        } else if (arg == L"--channels") {
-            options.channels_check =
-                parse_u32(require_value(argc, argv, i, "--channels"), "--channels");
         } else if (arg == L"--sample-rate") {
             options.sample_rate =
                 parse_u32(require_value(argc, argv, i, "--sample-rate"), "--sample-rate");
@@ -200,6 +197,12 @@ Options parse_options(int argc, wchar_t** argv) {
             }
         } else if (arg == L"--upmix") {
             options.upmix = true;
+        } else if (arg == L"--imax-dsp") {
+            options.imax_dsp = true;
+        } else if (arg == L"--imax-small") {
+            options.imax_small_speakers = narrow_ascii(
+                require_value(argc, argv, i, "--imax-small"),
+                "--imax-small");
         } else if (arg == L"--overwrite") {
             options.overwrite = true;
         } else if (arg == L"-v" || arg == L"--verbose") {
@@ -268,12 +271,13 @@ void print_help() {
         << "      --objects-output-bed      Write multichannel bed.wav and bed.json\n"
         << "      --audio-track N    Audio track ordinal; default: best DTS track\n"
         << "      --layout NAME      Output layout; default: DTS:X metadata layout\n"
-        << "      --channels N       Validate layout channel count only\n"
         << "      --sample-rate HZ   Output sample rate\n"
         << "      --threads N        Decode pipeline threads: 1 or 2; default 2\n"
         << "      --duration TIME    Decode only this duration: 10s, 10m, 1h2m5s\n"
         << "      --render MODE      objects, objects-only or bed; default objects\n"
         << "      --upmix            PARMA guided/blind upmix to 5.1.4/7.1.4\n"
+        << "      --imax-dsp         Recovered AVRx0 70 Hz LFE/bass profile\n"
+        << "      --imax-small LIST  Small speakers: all, none or FL,FR,...; default all\n"
         << "      --overwrite        Replace existing output\n"
         << "  -v, --verbose          Detailed diagnostics\n"
         << "      --version          Print version\n"
