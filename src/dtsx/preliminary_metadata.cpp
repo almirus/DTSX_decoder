@@ -204,17 +204,16 @@ PreliminaryMetadataHeader unpack_preliminary_metadata_header(
     case 3U:
     case 4U:
         selector_bits = 3U;
-        // sub_C59E0 stores the association/alternate flag from bit 6 and
-        // the short-form flag from bit 5.  Bit 7 belongs to the selector
-        // field in these association modes; treating any of bits 7..6 as
-        // alternate shifts the high-bit metadata association by one.
-        result.alternate_association = (result.raw_flags & 0x40U) != 0U;
+        // sub_C59E0 stores raw_flags >> 6 in the alternate-association
+        // byte and later tests that byte for zero.  Both high bits therefore
+        // select the alternate form; bit 5 independently selects short form.
+        result.alternate_association = (result.raw_flags >> 6U) != 0U;
         result.short_form = (result.raw_flags & 0x20U) != 0U;
         break;
     default:
-        // The native parser uses only bit 5 for the alternate-association
-        // flag in the default (three selector-bit) form.
-        result.alternate_association = (result.raw_flags & 0x20U) != 0U;
+        // The default native form stores raw_flags >> 5 and treats any
+        // nonzero value as alternate association.
+        result.alternate_association = (result.raw_flags >> 5U) != 0U;
         break;
     }
     if ((result.chunk_id & 0x80U) == 0U) {

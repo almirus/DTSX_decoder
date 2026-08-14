@@ -198,6 +198,7 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     if (xll_decoders_.size() < 256U) {
         xll_decoders_.resize(256U);
         uhd_xll_decoders_.resize(256U);
+        uhd_type65_xll_decoders_.resize(256U);
         xll_pbr_buffers_.resize(256U);
         combined_mix_metadata_state_.resize(256U);
         combined_mix_metadata_valid_.resize(256U, false);
@@ -280,6 +281,8 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         std::uint32_t metadata_component_offset =
             asset.xll_metadata_offset;
         bool metadata_in_assembled_xll = false;
+        std::uint32_t associated_audio_offset = 0U;
+        bool associated_audio_offset_valid = false;
         if (previous_pbr_size != 0U
             || asset.xll_sync_offset != 0U) {
             assembled_xll_words =
@@ -317,12 +320,10 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             for (const std::uint8_t payload_size :
                  asset.xll_metadata_chunk_sizes) {
                 raw_metadata_bytes +=
-                    static_cast<std::uint32_t>(
-                        payload_size) + 2U;
+                    static_cast<std::uint32_t>(payload_size) + 2U;
             }
             std::uint32_t associated_offset =
-                metadata_component_offset
-                + raw_metadata_bytes;
+                metadata_component_offset + raw_metadata_bytes;
             dtsx::bitstream::Cursor combined_source =
                 metadata_in_assembled_xll
                 ? assembled_xll_words->cursor()
@@ -385,82 +386,78 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     // libdtsx.so: sub_C48C0 ->
                     // dtsGetNumChSetsAudioChunk(69) ->
                     // dtsx_decodeTryXLLChSetHeader.  The native chunk list
-                    // stores the independent XLL bitstream pointer after
-                    // parsing the variable type-69 navigation.  Recover the
-                    // same pointer by its channel-set CRC and dimensions;
-                    // the navigation is 16 bytes in zero-length type-2
-                    // envelopes and 17 bytes in the usual one-byte form.
+                    // stores a cursor at the start of each associated audio
+                    // chunk and advances to the next chunk by its 15-bit
+                    // descriptor length. Native dtsx_decodeTryXLLChSetHeader
+                    // can consume the complete associated cursor; our XLL
+                    // channel-set decoder starts at the inner CRC-protected
+                    // header, so locate that header only inside this native
+                    // chunk boundary (never by an unbounded frame scan).
                     const std::size_t metadata_buffer_size =
                         metadata_in_assembled_xll
                         ? xll_pbr.size()
                         : asset.component_size_bytes[9U];
-                    std::uint32_t channel_set_offset = 0U;
-                    const std::uint32_t associated_extent =
+                    const std::uint32_t associated_chunk_length =
                         associated_index
                                 < asset.xll_associated_chunk_extents.size()
                             ? asset.xll_associated_chunk_extents[
                                   associated_index]
                             : 0U;
-                    const std::uint32_t search_extent =
-                        (std::max)(32U, associated_extent);
-                    const std::size_t search_limit =
-                        (std::min)(
-                            metadata_buffer_size,
-                            static_cast<std::size_t>(associated_offset)
-                                + search_extent);
-                    const std::uint32_t search_end =
-                        static_cast<std::uint32_t>(search_limit);
-                    for (std::uint32_t candidate = associated_offset;
-                         candidate < search_end;
-                         ++candidate) {
-                        dtsx::bitstream::Cursor probe_source =
-                            metadata_in_assembled_xll
-                            ? assembled_xll_words->cursor()
-                            : words.cursor();
-                        const std::uint32_t absolute_candidate =
-                            metadata_in_assembled_xll
-                            ? candidate
-                            : asset_payload_offset
-                                  + asset.component_byte_offsets[9U]
-                                  + candidate;
-                        probe_source.fast_forward(
-                            static_cast<std::int32_t>(
-                                8U * absolute_candidate));
-                        probe_source = probe_source.limited(
-                            static_cast<std::uint32_t>(
-                                8U
-                                * (metadata_buffer_size
-                                   - candidate)));
-                        dtsx::XllChannelSetProbe probe;
-                        if (dtsx::probe_xll_channel_set_header(
-                                probe_source,
-                                false,
-                                probe)
-                            && probe.channel_count
-                                   == combined_mix
-                                          .added_speaker_masks
-                                          .size()
-                            && probe.sample_rate == asset.sample_rate
-                            && probe.bit_depth != 0U
-                            && probe.bit_depth
-                                   <= probe.storage_bit_depth
-                            && probe.storage_bit_depth == 24U
-                            && probe.frequency_ratio == 1U
-                            && probe.header_size <= 64U) {
-                            channel_set_offset = candidate;
-                            break;
+                    std::uint32_t channel_set_offset = 0U;
+                    bool channel_set_valid = false;
+                    if (associated_chunk_length != 0U
+                        && associated_offset < metadata_buffer_size) {
+                        const std::uint32_t chunk_end =
+                            static_cast<std::uint32_t>((std::min)(
+                                metadata_buffer_size,
+                                static_cast<std::size_t>(associated_offset)
+                                    + associated_chunk_length));
+                        for (std::uint32_t candidate = associated_offset;
+                             candidate < chunk_end;
+                             ++candidate) {
+                            dtsx::bitstream::Cursor probe_source =
+                                metadata_in_assembled_xll
+                                ? assembled_xll_words->cursor()
+                                : words.cursor();
+                            const std::uint32_t absolute_candidate =
+                                metadata_in_assembled_xll
+                                ? candidate
+                                : asset_payload_offset
+                                      + asset.component_byte_offsets[9U]
+                                      + candidate;
+                            probe_source.fast_forward(
+                                static_cast<std::int32_t>(
+                                    8U * absolute_candidate));
+                            probe_source = probe_source.limited(
+                                8U * (chunk_end - candidate));
+                            dtsx::XllChannelSetProbe probe;
+                            if (dtsx::probe_xll_channel_set_header(
+                                    probe_source, false, probe)
+                                && probe.channel_count
+                                       == combined_mix
+                                              .added_speaker_masks
+                                              .size()
+                                && probe.sample_rate == asset.sample_rate
+                                && probe.bit_depth != 0U
+                                && probe.bit_depth
+                                       <= probe.storage_bit_depth
+                                && probe.storage_bit_depth == 24U
+                                && probe.frequency_ratio == 1U) {
+                                channel_set_offset = candidate;
+                                channel_set_valid = true;
+                                break;
+                            }
                         }
                     }
-                    // Type-69 carries an optional supplemental XLL channel
-                    // set.  Some frames keep the associated-chunk entry but
-                    // do not carry a complete independently decodable set.
-                    // Do not reject the main XLL frame in that case: doing
-                    // so leaves it in the PBR buffer and turns one missing
-                    // supplemental set into a cascade of silent stem gaps
-                    // and eventual smoothing-buffer overflow.
-                    if (channel_set_offset != 0U
-                        && channel_set_offset
-                        < metadata_buffer_size) {
+                    // sub_89E90 uses the 15-bit associated length only to
+                    // advance its list cursor to the next audio chunk.  The
+                    // cursor saved for dtsx_decodeTryXLLChSetHeader retains
+                    // the remainder of the complete XLL component: its
+                    // navigation table may therefore reference audio bytes
+                    // beyond that associated length.  Preserve those native
+                    // cursor bounds after locating the header within the
+                    // current chunk.
+                    if (channel_set_valid) {
                         dtsx::bitstream::Cursor
                             supplemental_source =
                                 metadata_in_assembled_xll
@@ -613,6 +610,15 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     envelope,
                     static_cast<std::uint8_t>(
                         exss.asset_count))) {
+                // PrelimParseChunks calls sub_8AC78 first and passes the
+                // advanced cursor to sub_89E90.  The CRC-recovered envelope
+                // size is therefore the authoritative start of associated
+                // audio; the descriptor's original final element size may
+                // have been recovered by unpack_metadata_chunk_payload.
+                associated_audio_offset =
+                    metadata_component_offset
+                    + envelope.crc_region_size;
+                associated_audio_offset_valid = true;
                 for (const dtsx::MetadataElementHeader& element :
                      envelope.elements) {
                     if (element.chunk_id == 247U) {
@@ -790,31 +796,33 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 std::move(xll.embedded_downmix_outputs);
         }
 
-        // libdtsx.so: dtsUHDChunks_Parse selects associated chunk types 65
-        // and 68, then DTS_ObjectDecoder_StartNewFrame routes type 68 into
-        // DTSHD_CodingCompXLL_ParseFrame. Those private frames retain their
-        // ordinary XLL sync words inside the XLL extension storage.
+        // PrelimParseChunks/sub_89E90 stores an exact cursor and length for
+        // every associated audio chunk in the assembled XLL frame.  Native
+        // dtsUHDChunks_Parse dispatches only types 65 and 68 and feeds those
+        // bounded cursors to separate persistent object decoders (component
+        // modes 64 and 512).  Searching the current transport fragment from
+        // xll_metadata_offset is incorrect for PBR: it can select the main
+        // bed XLL sync and drops object waveforms split across fragments.
         if (asset.xll_object_metadata_present
-            && asset.xll_metadata_offset < xll_packet.size()) {
-            dtsx::bitstream::WordBuffer uhd_words(
+            && !asset.xll_metadata_chunk_sizes.empty()
+            && !asset.xll_associated_chunk_types.empty()
+            && associated_audio_offset_valid) {
+            std::uint32_t associated_offset = associated_audio_offset;
+            const std::size_t object_buffer_size =
+                metadata_in_assembled_xll
+                ? static_cast<std::size_t>(xll.common.frame_size)
+                : xll_packet.size();
+            dtsx::bitstream::WordBuffer current_xll_words(
                 xll_packet, false);
-            for (std::size_t offset = asset.xll_metadata_offset;
-                 offset + 4U <= xll_packet.size();) {
-                const std::uint32_t sync =
-                    (static_cast<std::uint32_t>(
-                         xll_packet[offset])
-                     << 24U)
-                    | (static_cast<std::uint32_t>(
-                           xll_packet[offset + 1U])
-                       << 16U)
-                    | (static_cast<std::uint32_t>(
-                           xll_packet[offset + 2U])
-                       << 8U)
-                    | xll_packet[offset + 3U];
-                if (sync != dtsx::kXllSyncLegacy
-                    && sync != dtsx::kXllSync) {
-                    ++offset;
-                    continue;
+            for (std::size_t associated_index = 0U;
+                 associated_index
+                     < asset.xll_associated_chunk_types.size();
+                 ++associated_index) {
+                const std::uint8_t associated_chunk_type =
+                    asset.xll_associated_chunk_types[
+                        associated_index];
+                if (associated_offset + 5U > object_buffer_size) {
+                    break;
                 }
                 static constexpr std::array<std::uint8_t, 4U>
                     kAssociationTypeBits = {0U, 1U, 2U, 2U};
@@ -827,39 +835,66 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 const std::uint8_t association_index_bits =
                     static_cast<std::uint8_t>(
                         8U - association_type_bits);
+                dtsx::bitstream::Cursor association_source =
+                    metadata_in_assembled_xll
+                    ? assembled_xll_words->cursor()
+                    : current_xll_words.cursor();
+                association_source.fast_forward(
+                    static_cast<std::int32_t>(
+                        8U * associated_offset));
                 const std::uint8_t association_index =
-                    offset == 0U
-                    ? 0U
-                    : static_cast<std::uint8_t>(
-                          xll_packet[offset - 1U]
-                          & ((1U << association_index_bits)
-                             - 1U));
-                auto& object_decoders =
-                    uhd_xll_decoders_[asset.asset_index];
+                    static_cast<std::uint8_t>(
+                        association_source.extract_unsigned(8U)
+                        & ((1U << association_index_bits) - 1U));
+                const std::uint32_t object_frame_offset =
+                    associated_offset + 1U;
+                dtsx::bitstream::Cursor object_source =
+                    association_source;
+                const std::uint32_t sync =
+                    object_source.lookahead_unsigned(32U);
+                if (sync != dtsx::kXllSync
+                    && sync != dtsx::kXllSyncLegacy) {
+                    break;
+                }
+                dtsx::XllCommonHeader object_common;
+                dtsx::bitstream::Cursor common_source = object_source;
+                if (!dtsx::unpack_xll_common_header(
+                        common_source, object_common)
+                    || object_common.frame_size == 0U
+                    || object_common.frame_size
+                           > object_buffer_size - object_frame_offset) {
+                    break;
+                }
+                const std::uint32_t associated_length =
+                    object_common.frame_size + 1U;
+                associated_offset += associated_length;
+                if (associated_chunk_type != 65U
+                    && associated_chunk_type != 68U) {
+                    continue;
+                }
+                auto& object_decoders = associated_chunk_type == 65U
+                    ? uhd_type65_xll_decoders_[asset.asset_index]
+                    : uhd_xll_decoders_[asset.asset_index];
                 if (object_decoders.size()
                     <= association_index) {
                     object_decoders.resize(
                         static_cast<std::size_t>(
                             association_index) + 1U);
                 }
-                dtsx::bitstream::Cursor object_source =
-                    uhd_words.cursor();
-                object_source.fast_forward(
-                    static_cast<std::int32_t>(8U * offset));
                 dtsx::XllDecodedFrame object_xll;
+                object_source = object_source.limited(
+                    8U * object_common.frame_size);
                 if (!object_decoders[association_index]
                          .decode_msb_frame(
                              object_source,
                              object_xll,
                              false)
-                    || object_xll.common.frame_size == 0U
                     || object_xll.common.frame_size
-                           > xll_packet.size() - offset
+                           != object_common.frame_size
                     || object_xll.samples_per_channel
                            != decoded.samples_per_channel
                     || object_xll.sample_rate
                            != decoded.sample_rate) {
-                    ++offset;
                     continue;
                 }
                 const std::uint32_t waveform_base =
@@ -899,7 +934,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                         object_source_activity_mask);
                     decoded.waveform_is_supplemental.push_back(false);
                 }
-                offset += object_xll.common.frame_size;
             }
         }
 

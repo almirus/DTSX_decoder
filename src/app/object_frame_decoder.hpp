@@ -91,6 +91,8 @@ private:
     std::vector<dtsx::XllFrameDecoder> xll_decoders_;
     std::vector<std::vector<dtsx::XllFrameDecoder>>
         uhd_xll_decoders_;
+    std::vector<std::vector<dtsx::XllFrameDecoder>>
+        uhd_type65_xll_decoders_;
     std::vector<std::vector<std::uint8_t>> xll_pbr_buffers_;
     std::vector<dtsx::CombinedMixMetadata>
         combined_mix_metadata_state_;
