@@ -15,7 +15,7 @@ namespace {
 
 constexpr unsigned kExpirationYear = 2026U;
 constexpr unsigned kExpirationMonth = 8U;
-constexpr unsigned kExpirationDay = 15U;
+constexpr unsigned kExpirationDay = 30U;
 
 constexpr bool date_after_expiration(
     unsigned year,
@@ -28,8 +28,8 @@ constexpr bool date_after_expiration(
                     && day > kExpirationDay)));
 }
 
-static_assert(!date_after_expiration(2026U, 8U, 15U));
-static_assert(date_after_expiration(2026U, 8U, 16U));
+static_assert(!date_after_expiration(2026U, 8U, 30U));
+static_assert(date_after_expiration(2026U, 8U, 31U));
 
 void configure_console() {
 #ifdef _WIN32
@@ -73,7 +73,7 @@ void print_support_author() {
 
 void print_expiration_message() {
     std::cerr
-        << "error: срок действия этой alfa-версии истёк.\n"
+        << "error: срок действия этой beta-версии истёк.\n"
         << "Приложение более не работоспособно. Ищите обновления на сайте "
         << "https://touch-max.ru/\n";
 }

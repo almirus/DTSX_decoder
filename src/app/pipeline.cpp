@@ -461,45 +461,161 @@ struct ChannelCapacity final {
     std::uint32_t reference_speakers = 0U;
     std::uint32_t supplemental_speakers = 0U;
     std::uint32_t maximum_supplemental_channels = 0U;
+    std::uint32_t maximum_unmapped_supplemental_waveforms = 0U;
     std::uint32_t sampled_windows = 0U;
     bool any_objects = false;
     bool any_waveforms = false;
     bool dynamic_objects = false;
+    bool any_positive_height_object = false;
+    bool imax_metadata = false;
+    struct ObjectRecommendationState final {
+        bool observed = false;
+        bool position_available = false;
+        bool single_point = true;
+        bool centered = true;
+        bool static_position = true;
+        float azimuth = 0.0F;
+        float elevation = 0.0F;
+        float distance = 0.0F;
+    };
+    std::map<std::uint32_t, ObjectRecommendationState>
+        object_recommendation_states;
 };
 
 struct SupplementalLayoutObservation final {
     std::uint32_t channels = 0U;
+    std::uint32_t unmapped_waveforms = 0U;
     std::uint32_t speaker_activity_mask = 0U;
 };
 
 struct SupplementalLayoutEvidence final {
     std::uint32_t channels = 0U;
+    std::uint32_t unmapped_waveforms = 0U;
     std::uint32_t speaker_activity_mask = 0U;
     std::uint32_t consecutive_frames = 0U;
     bool confirmed = false;
 };
 
-SupplementalLayoutObservation supplemental_layout_observation(
-    const DecodedObjectAudioFrame& decoded) noexcept {
-    SupplementalLayoutObservation observation;
-    observation.channels = static_cast<std::uint32_t>(std::count(
-        decoded.waveform_is_supplemental.begin(),
-        decoded.waveform_is_supplemental.end(),
-        true));
-    if (observation.channels == 0U) {
-        return observation;
+std::uint32_t alternate_profile_unmapped_waveform_count(
+    std::uint32_t extension_sync_word) noexcept {
+    // D1-D4 samples use a stable N+4 topology.  D0 does not encode N in the
+    // sync suffix: Arcam accepts both one-channel point sources and
+    // three-channel multi-point sources, so no count may be inferred from a
+    // D0 sync when its XLL headers were not decoded.
+    switch (extension_sync_word) {
+    case 0xF14000D0U:
+        return 0U;
+    case 0xF14000D1U:
+        return 6U;
+    case 0xF14000D2U:
+        return 7U;
+    case 0xF14000D3U:
+        return 8U;
+    case 0xF14000D4U:
+        return 9U;
+    default:
+        return 0U;
     }
+}
+
+const char* alternate_profile_name(
+    std::uint32_t extension_sync_word) noexcept {
+    switch (extension_sync_word) {
+    case 0xF14000D0U:
+        return "D0";
+    case 0xF14000D1U:
+        return "D1";
+    case 0xF14000D2U:
+        return "D2";
+    case 0xF14000D3U:
+        return "D3";
+    case 0xF14000D4U:
+        return "D4";
+    default:
+        return nullptr;
+    }
+}
+
+std::vector<bool> semantically_mapped_waveforms(
+    const DecodedObjectAudioFrame& decoded) {
+    std::vector<bool> mapped(decoded.waveform_channels.size(), false);
+    for (std::size_t waveform = 0U;
+         waveform < mapped.size()
+             && waveform < decoded.waveform_speaker_masks.size();
+         ++waveform) {
+        mapped[waveform] =
+            decoded.waveform_speaker_masks[waveform] != 0U;
+    }
+    for (const dtsx::ObjectMetadataBlock& object : decoded.objects) {
+        std::vector<std::uint32_t> channels;
+        if (!dtsx::object_waveform_channel_indices(
+                object,
+                channels,
+                &decoded.waveform_base_by_id)) {
+            continue;
+        }
+        for (const std::uint32_t channel : channels) {
+            if (channel < mapped.size()) {
+                mapped[channel] = true;
+            }
+        }
+    }
+    return mapped;
+}
+
+bool duplicates_semantically_mapped_waveform(
+    const DecodedObjectAudioFrame& decoded,
+    std::size_t waveform,
+    const std::vector<bool>& mapped) noexcept {
+    if (waveform >= decoded.waveform_channels.size()) {
+        return false;
+    }
+    const auto& samples = decoded.waveform_channels[waveform];
+    for (std::size_t candidate = 0U;
+         candidate < mapped.size();
+         ++candidate) {
+        if (candidate == waveform
+            || !mapped[candidate]
+            || candidate >= decoded.waveform_channels.size()
+            || decoded.waveform_channels[candidate].size()
+                   != samples.size()) {
+            continue;
+        }
+        if (samples == decoded.waveform_channels[candidate]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+SupplementalLayoutObservation supplemental_layout_observation(
+    const DecodedObjectAudioFrame& decoded) {
+    SupplementalLayoutObservation observation;
+    const std::vector<bool> mapped =
+        semantically_mapped_waveforms(decoded);
     observation.speaker_activity_mask =
         decoded.supplemental_speaker_activity_mask;
     for (std::size_t waveform = 0U;
-         waveform < decoded.waveform_is_supplemental.size()
-         && waveform < decoded.waveform_speaker_masks.size();
+         waveform < decoded.waveform_is_supplemental.size();
          ++waveform) {
-        if (decoded.waveform_is_supplemental[waveform]) {
-            observation.speaker_activity_mask |=
-                dtsx::speaker_mask_to_activity_mask(
-                    decoded.waveform_speaker_masks[waveform]);
+        if (!decoded.waveform_is_supplemental[waveform]) {
+            continue;
         }
+        const std::uint32_t speaker_mask =
+            waveform < decoded.waveform_speaker_masks.size()
+            ? decoded.waveform_speaker_masks[waveform]
+            : 0U;
+        if (speaker_mask == 0U
+            && duplicates_semantically_mapped_waveform(
+                decoded, waveform, mapped)) {
+            continue;
+        }
+        ++observation.channels;
+        if (speaker_mask == 0U) {
+            ++observation.unmapped_waveforms;
+        }
+        observation.speaker_activity_mask |=
+            dtsx::speaker_mask_to_activity_mask(speaker_mask);
     }
     return observation;
 }
@@ -512,9 +628,12 @@ bool confirm_supplemental_layout(
         return false;
     }
     if (evidence.channels != observation.channels
+        || evidence.unmapped_waveforms
+               != observation.unmapped_waveforms
         || evidence.speaker_activity_mask
                != observation.speaker_activity_mask) {
         evidence.channels = observation.channels;
+        evidence.unmapped_waveforms = observation.unmapped_waveforms;
         evidence.speaker_activity_mask =
             observation.speaker_activity_mask;
         evidence.consecutive_frames = 1U;
@@ -543,12 +662,86 @@ void merge_channel_capacity(
     destination.maximum_supplemental_channels = (std::max)(
         destination.maximum_supplemental_channels,
         source.maximum_supplemental_channels);
+    destination.maximum_unmapped_supplemental_waveforms = (std::max)(
+        destination.maximum_unmapped_supplemental_waveforms,
+        source.maximum_unmapped_supplemental_waveforms);
     destination.any_objects =
         destination.any_objects || source.any_objects;
     destination.any_waveforms =
         destination.any_waveforms || source.any_waveforms;
     destination.dynamic_objects =
         destination.dynamic_objects || source.dynamic_objects;
+    destination.any_positive_height_object =
+        destination.any_positive_height_object
+        || source.any_positive_height_object;
+    destination.imax_metadata =
+        destination.imax_metadata || source.imax_metadata;
+    for (const auto& entry : source.object_recommendation_states) {
+        auto& state = destination.object_recommendation_states[entry.first];
+        state.observed = state.observed || entry.second.observed;
+        state.position_available =
+            state.position_available || entry.second.position_available;
+        state.single_point = state.single_point && entry.second.single_point;
+        state.centered = state.centered && entry.second.centered;
+        state.static_position =
+            state.static_position && entry.second.static_position;
+        state.azimuth = entry.second.azimuth;
+        state.elevation = entry.second.elevation;
+        state.distance = entry.second.distance;
+    }
+}
+
+void observe_object_recommendation_metadata(
+    ChannelCapacity& capacity,
+    const DecodedObjectAudioFrame& decoded) {
+    capacity.imax_metadata = capacity.imax_metadata || decoded.imax_enhanced;
+    for (std::size_t index = 0U; index < decoded.objects.size(); ++index) {
+        const dtsx::ObjectMetadataBlock& object = decoded.objects[index];
+        const std::uint32_t id = object.object_id_available
+            ? object.object_id
+            : static_cast<std::uint32_t>(index);
+        auto& state = capacity.object_recommendation_states[id];
+        state.observed = true;
+        state.single_point = state.single_point && object.points.size() == 1U;
+        if (object.points.empty()) {
+            state.centered = false;
+            state.static_position = false;
+            continue;
+        }
+        if (object.points.size() != 1U) {
+            state.centered = false;
+        }
+        for (const dtsx::PointSourceMetadata& point : object.points) {
+            const dtsx::RendererCoordinates& coordinates = point.coordinates;
+            capacity.any_positive_height_object =
+                capacity.any_positive_height_object
+                || coordinates.elevation_degrees > 0.0F;
+            state.centered = state.centered
+                && std::fabs(coordinates.azimuth_degrees) <= 0.5F
+                && std::fabs(coordinates.elevation_degrees) <= 0.5F;
+            if (state.position_available
+                && (std::fabs(coordinates.azimuth_degrees - state.azimuth) > 0.01F
+                    || std::fabs(coordinates.elevation_degrees - state.elevation) > 0.01F
+                    || std::fabs(coordinates.distance - state.distance) > 0.001F)) {
+                state.static_position = false;
+            }
+            state.azimuth = coordinates.azimuth_degrees;
+            state.elevation = coordinates.elevation_degrees;
+            state.distance = coordinates.distance;
+            state.position_available = true;
+        }
+    }
+}
+
+bool has_single_static_center_imax_object(
+    const ChannelCapacity& capacity) noexcept {
+    if (!capacity.imax_metadata
+        || capacity.object_recommendation_states.size() != 1U) {
+        return false;
+    }
+    const auto& state = capacity.object_recommendation_states.begin()->second;
+    return state.observed && state.single_point && state.centered
+        && state.static_position;
 }
 
 ChannelCapacity inspect_channel_capacity_window(
@@ -617,6 +810,7 @@ ChannelCapacity inspect_channel_capacity_window(
             make_xll_lossy_base(bed_decoder.decoded_core());
         if (object_decoder.decode(frame, decoded, lossy_base)
             == ObjectFrameDecodeResult::Decoded) {
+            observe_object_recommendation_metadata(capacity, decoded);
             for (std::size_t waveform = 0U;
                  waveform < decoded.waveform_channels.size();
                  ++waveform) {
@@ -652,6 +846,11 @@ ChannelCapacity inspect_channel_capacity_window(
                 capacity.maximum_supplemental_channels = (std::max)(
                     capacity.maximum_supplemental_channels,
                     supplemental.channels);
+                capacity.maximum_unmapped_supplemental_waveforms =
+                    (std::max)(
+                        capacity
+                            .maximum_unmapped_supplemental_waveforms,
+                        supplemental.unmapped_waveforms);
                 add_activity_speakers(
                     supplemental.speaker_activity_mask,
                     capacity.physical_speakers);
@@ -846,6 +1045,27 @@ void print_decode_summary(
         std::cerr << warning;
         console_style::reset(std::cerr, color);
         std::cerr << '\n';
+    }
+}
+
+void print_layout_recommendations(
+    const ChannelLayout& layout,
+    const ChannelCapacity& capacity) {
+    if (layout.name != "5.1" && layout.name != "7.1") {
+        return;
+    }
+    if (capacity.any_positive_height_object) {
+        std::cerr
+            << "Recommendation: objects with positive elevation were "
+               "detected; use the "
+            << (layout.name == "5.1" ? "5.1.4" : "7.1.4") << ".\n";
+    }
+    if (has_single_static_center_imax_object(capacity)) {
+        std::cerr
+            << "Warning: one static center object was detected with the "
+               "IMAX metadata flag. This is a virtual IMAX height channel; "
+               "the recommended layout is "
+            << (layout.name == "5.1" ? "5.1.4" : "7.1.4") << ".\n";
     }
 }
 
@@ -1477,6 +1697,7 @@ void run_internal_probe(
     std::uint64_t xll_pbr_fallback_frame_count = 0U;
     std::uint64_t xll_pbr_fallback_frame_bytes = 0U;
     std::uint32_t maximum_supplemental_xll_channels = 0U;
+    std::uint32_t maximum_unmapped_supplemental_waveforms = 0U;
     std::uint64_t supplemental_activity_total_samples = 0U;
     std::uint64_t supplemental_activity_active_samples = 0U;
     std::uint64_t metadata_chunk_count = 0U;
@@ -1849,6 +2070,10 @@ void run_internal_probe(
                     (std::max)(
                         maximum_supplemental_xll_channels,
                         supplemental.channels);
+                maximum_unmapped_supplemental_waveforms =
+                    (std::max)(
+                        maximum_unmapped_supplemental_waveforms,
+                        supplemental.unmapped_waveforms);
                 detected_supplemental_activity_mask |=
                     supplemental.speaker_activity_mask;
             }
@@ -2059,6 +2284,10 @@ void run_internal_probe(
         maximum_supplemental_xll_channels = (std::max)(
             maximum_supplemental_xll_channels,
             sampled_capacity.maximum_supplemental_channels);
+        maximum_unmapped_supplemental_waveforms = (std::max)(
+            maximum_unmapped_supplemental_waveforms,
+            sampled_capacity
+                .maximum_unmapped_supplemental_waveforms);
     }
 
     progress.done(progress_stage);
@@ -2179,6 +2408,12 @@ void run_internal_probe(
         print_probe_field(
             "DTS:X extension sync",
             probe_hex(detected_dtsx_extension_sync_word));
+        if (const char* extension_profile = alternate_profile_name(
+                detected_dtsx_extension_sync_word)) {
+            print_probe_field(
+                "DTS:X extension profile",
+                extension_profile);
+        }
     }
     if (detected_imax_enhanced) {
         if (detected_uhd_type1_certified_content) {
@@ -2322,7 +2557,26 @@ void run_internal_probe(
             detected_supplemental_activity_mask != 0U
                 ? format_probe_speaker_layout(
                       detected_supplemental_activity_mask)
-                : "private upper layer; positions supplied by DTS:X metadata");
+                : "not signalled (no supplemental speaker mapping)");
+        if (maximum_unmapped_supplemental_waveforms != 0U) {
+            print_probe_field(
+                "Unmapped supplemental waveforms",
+                maximum_unmapped_supplemental_waveforms);
+        }
+    }
+    if (maximum_unmapped_supplemental_waveforms == 0U
+        && maximum_supplemental_xll_channels == 0U) {
+        const std::uint32_t profile_waveforms =
+            alternate_profile_unmapped_waveform_count(
+                detected_dtsx_extension_sync_word);
+        if (profile_waveforms != 0U) {
+            std::ostringstream summary;
+            summary << profile_waveforms
+                    << " (profile topology; PCM not decoded)";
+            print_probe_field(
+                "Unmapped supplemental waveforms",
+                summary.str());
+        }
     }
     print_probe_field(
         "Height in coded bed",
@@ -3517,6 +3771,8 @@ void export_object_stems(
     std::unique_ptr<ObjectStemWriter> writer;
     dtsx::ElementaryFrame elementary;
     std::uint64_t sample_position = 0U;
+    std::uint64_t sample_limit =
+        (std::numeric_limits<std::uint64_t>::max)();
     std::uint32_t last_extension_frame_duration = 0U;
     bool wrote_audio = false;
     ProgressReporter progress;
@@ -3637,7 +3893,30 @@ void export_object_stems(
             continue;
         }
         last_extension_frame_duration = decoded.samples_per_channel;
-        const std::uint32_t frame_duration = decoded.samples_per_channel;
+        if (sample_limit
+            == (std::numeric_limits<std::uint64_t>::max)()) {
+            sample_limit = duration_frame_limit(
+                options, decoded.sample_rate);
+        }
+        if (sample_position >= sample_limit) {
+            break;
+        }
+        const std::uint32_t frame_duration = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(
+                decoded.samples_per_channel,
+                sample_limit - sample_position));
+        if (frame_duration == 0U) {
+            break;
+        }
+        if (frame_duration != decoded.samples_per_channel) {
+            for (std::vector<std::int32_t>& channel :
+                 decoded.waveform_channels) {
+                if (channel.size() > frame_duration) {
+                    channel.resize(frame_duration);
+                }
+            }
+            decoded.samples_per_channel = frame_duration;
+        }
         StemWork work{std::move(decoded), sample_position};
         if (parallel) {
             if (!slot.submit(std::move(work))) {
@@ -3647,6 +3926,9 @@ void export_object_stems(
             write_frame(work);
         }
         sample_position += frame_duration;
+        if (sample_position >= sample_limit) {
+            break;
+        }
     }
     } catch (...) {
         slot.stop(std::current_exception());
@@ -3804,6 +4086,8 @@ bool map_supplemental_xll_to_height_layout(
         return false;
     }
     bool supplemental_available = false;
+    const std::vector<bool> semantically_mapped =
+        semantically_mapped_waveforms(decoded);
     std::vector<bool> mapped_outputs(
         layout.channels.size(), false);
     std::vector<bool> mapped_waveforms(
@@ -3816,9 +4100,16 @@ bool map_supplemental_xll_to_height_layout(
         }
         supplemental_available = true;
         if (decoded.waveform_channels[waveform].size()
-                != decoded.samples_per_channel
-            || decoded.waveform_speaker_masks[waveform] == 0U) {
+                != decoded.samples_per_channel) {
             return false;
+        }
+        if (decoded.waveform_speaker_masks[waveform] == 0U) {
+            if (!duplicates_semantically_mapped_waveform(
+                    decoded, waveform, semantically_mapped)) {
+                return false;
+            }
+            mapped_waveforms[waveform] = true;
+            continue;
         }
         std::size_t output = layout.channels.size();
         for (std::size_t candidate = 0U;
@@ -4058,7 +4349,8 @@ std::uint64_t render_object_stream(
     std::uint32_t output_sample_rate,
     const std::filesystem::path& output_path,
     RenderMode render_mode,
-    std::uint32_t* rendered_sample_rate = nullptr) {
+    std::uint32_t* rendered_sample_rate = nullptr,
+    ChannelCapacity* recommendation_capacity = nullptr) {
     DtsFrameReader reader(options);
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
@@ -4157,6 +4449,11 @@ std::uint64_t render_object_stream(
         const ObjectFrameDecodeResult decode_result =
             decoder.decode(
                 elementary, decoded, lossy_base);
+        if (recommendation_capacity != nullptr
+            && decode_result == ObjectFrameDecodeResult::Decoded) {
+            observe_object_recommendation_metadata(
+                *recommendation_capacity, decoded);
+        }
         imax_stream_active =
             imax_stream_active || decoded.imax_enhanced;
         if (parallel_decode) {
@@ -4721,8 +5018,15 @@ int run_pipeline(const Options& requested_options) {
     print_decode_summary(
         options, probe, *layout, output, capacity_warning);
     const std::uint64_t frames = render_object_stream(
-        decode_options, *layout, sample_rate, output, options.render_mode);
+        decode_options,
+        *layout,
+        sample_rate,
+        output,
+        options.render_mode,
+        nullptr,
+        &capacity);
     std::cerr << "Frames: " << frames << '\n';
+    print_layout_recommendations(*layout, capacity);
     return 0;
 }
 

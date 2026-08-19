@@ -24,7 +24,7 @@ public:
         std::uint64_t sample_position,
         std::uint32_t duration_samples);
     [[nodiscard]] bool has_audio_stems() const noexcept {
-        return !wavs_.empty();
+        return !wavs_.empty() || !supplemental_wavs_.empty();
     }
     void close();
 
@@ -32,6 +32,7 @@ private:
     using StemKey = std::pair<std::uint32_t, std::uint32_t>;
 
     WavWriter& wav(const StemKey& key);
+    WavWriter& supplemental_wav(std::uint32_t waveform);
     ObjectSidecarWriter& coordinates(const StemKey& key);
     [[nodiscard]] std::filesystem::path stem_path(
         const StemKey& key,
@@ -42,6 +43,8 @@ private:
     bool overwrite_ = false;
     std::uint64_t timeline_end_ = 0;
     std::map<StemKey, std::unique_ptr<WavWriter>> wavs_;
+    std::map<std::uint32_t, std::unique_ptr<WavWriter>>
+        supplemental_wavs_;
     std::map<StemKey, std::unique_ptr<ObjectSidecarWriter>>
         coordinate_writers_;
 };

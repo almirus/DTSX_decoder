@@ -105,6 +105,553 @@ std::int32_t saturate_24(
                 0x7FFFFFLL, value)));
 }
 
+constexpr std::uint32_t kAlternateD0Sync = 0xF14000D0U;
+constexpr std::uint32_t kAlternateD1Sync = 0xF14000D1U;
+constexpr std::uint32_t kAlternateD2Sync = 0xF14000D2U;
+constexpr std::uint32_t kAlternateD3Sync = 0xF14000D3U;
+constexpr std::uint32_t kAlternateD4Sync = 0xF14000D4U;
+constexpr std::size_t kAlternateFrameSamples = 512U;
+constexpr std::size_t kAlternateMaximumSegments = 8U;
+constexpr std::size_t kAlternateMaximumInterstitial = 20U;
+constexpr std::array<std::uint8_t, 6> kAlternateOuterSuffix = {
+    0x03U, 0x34U, 0x38U, 0x8CU, 0x4FU, 0x00U};
+constexpr std::array<std::uint8_t, 6> kAlternateInnerSuffix = {
+    0x02U, 0x34U, 0x38U, 0x8CU, 0x4FU, 0x00U};
+
+enum class AlternateProfile {
+    D0,
+    D1,
+    D2,
+    D3,
+    D4,
+};
+
+struct AlternateGeometry final {
+    std::uint32_t segments = 0U;
+    std::uint8_t navigation_size_bits = 0U;
+};
+
+struct AlternateHeader final {
+    std::size_t offset = 0U;
+    std::size_t size = 0U;
+    std::uint8_t channels = 0U;
+};
+
+struct AlternateLayout final {
+    std::array<AlternateHeader, 2> headers;
+    std::array<AlternateGeometry, 2> geometries;
+};
+
+bool read_bits_at(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t bit_offset,
+    std::uint8_t bit_count,
+    std::uint32_t& value) noexcept {
+    value = 0U;
+    if (bit_count > 32U
+        || bit_offset > bytes.size() * 8U
+        || bit_count > bytes.size() * 8U - bit_offset) {
+        return false;
+    }
+    for (std::uint8_t bit = 0U; bit < bit_count; ++bit) {
+        const std::size_t absolute = bit_offset + bit;
+        value = (value << 1U)
+            | ((bytes[absolute >> 3U]
+                >> (7U - (absolute & 7U))) & 1U);
+    }
+    return true;
+}
+
+bool valid_crc_bytes(
+    const std::vector<std::uint8_t>& bytes,
+    std::size_t offset,
+    std::size_t size) {
+    if (offset > bytes.size() || size > bytes.size() - offset) {
+        return false;
+    }
+    std::uint16_t crc = 0xFFFFU;
+    for (std::size_t index = offset; index < offset + size; ++index) {
+        crc ^= static_cast<std::uint16_t>(bytes[index]) << 8U;
+        for (std::uint8_t bit = 0U; bit < 8U; ++bit) {
+            crc = static_cast<std::uint16_t>(
+                (crc & 0x8000U) != 0U
+                ? (crc << 1U) ^ 0x1021U
+                : crc << 1U);
+        }
+    }
+    return crc == 0U;
+}
+
+bool alternate_geometry_at(
+    const std::vector<std::uint8_t>& control,
+    std::size_t bit_offset,
+    AlternateGeometry& geometry) noexcept {
+    std::uint32_t segment_log2 = 0U;
+    std::uint32_t segment_sample_log2 = 0U;
+    std::uint32_t navigation_size_minus_one = 0U;
+    if (!read_bits_at(control, bit_offset, 4U, segment_log2)
+        || !read_bits_at(
+            control, bit_offset + 4U, 4U, segment_sample_log2)
+        || !read_bits_at(
+            control,
+            bit_offset + 8U,
+            5U,
+            navigation_size_minus_one)
+        || segment_log2 >= 32U
+        || segment_sample_log2 >= 32U) {
+        return false;
+    }
+    const std::uint32_t segments = 1U << segment_log2;
+    const std::uint32_t segment_samples =
+        1U << segment_sample_log2;
+    const std::uint32_t navigation_size_bits =
+        navigation_size_minus_one + 1U;
+    if (segments > kAlternateMaximumSegments
+        || segments * segment_samples != kAlternateFrameSamples
+        || navigation_size_bits < 4U
+        || navigation_size_bits > 20U) {
+        return false;
+    }
+    geometry.segments = segments;
+    geometry.navigation_size_bits = static_cast<std::uint8_t>(
+        navigation_size_bits);
+    return true;
+}
+
+bool alternate_unique_geometry(
+    const std::vector<std::uint8_t>& control,
+    std::size_t first_bit,
+    std::size_t last_bit,
+    std::size_t& selected_bit,
+    AlternateGeometry& selected_geometry) noexcept {
+    bool found = false;
+    for (std::size_t bit = first_bit; bit <= last_bit; ++bit) {
+        AlternateGeometry candidate;
+        if (!alternate_geometry_at(control, bit, candidate)) {
+            continue;
+        }
+        if (found) {
+            return false;
+        }
+        found = true;
+        selected_bit = bit;
+        selected_geometry = candidate;
+    }
+    return found;
+}
+
+bool alternate_header_at(
+    const std::vector<std::uint8_t>& payload,
+    std::size_t byte_offset,
+    AlternateHeader& header) {
+    if (byte_offset > payload.size()) {
+        return false;
+    }
+    std::size_t bit = byte_offset * 8U;
+    std::uint32_t header_size_minus_one = 0U;
+    std::uint32_t channels_minus_one = 0U;
+    if (!read_bits_at(payload, bit, 10U, header_size_minus_one)
+        || !read_bits_at(payload, bit + 10U, 4U, channels_minus_one)) {
+        return false;
+    }
+    const std::uint32_t channels = channels_minus_one + 1U;
+    if (channels > 8U) {
+        return false;
+    }
+    bit += 14U + channels;
+    std::uint32_t pcm_minus_one = 0U;
+    std::uint32_t storage_minus_one = 0U;
+    std::uint32_t frequency_index = 0U;
+    std::uint32_t frequency_modifier = 0U;
+    std::uint32_t replacement_set = 0U;
+    if (!read_bits_at(payload, bit, 5U, pcm_minus_one)
+        || !read_bits_at(payload, bit + 5U, 5U, storage_minus_one)
+        || !read_bits_at(payload, bit + 10U, 4U, frequency_index)
+        || !read_bits_at(payload, bit + 14U, 2U, frequency_modifier)
+        || !read_bits_at(payload, bit + 16U, 2U, replacement_set)) {
+        return false;
+    }
+    const std::size_t header_size = header_size_minus_one + 1U;
+    const std::uint32_t pcm = pcm_minus_one + 1U;
+    const std::uint32_t storage = storage_minus_one + 1U;
+    if (header_size > payload.size() - byte_offset
+        || pcm > storage
+        || (storage != 16U && storage != 20U && storage != 24U)
+        || frequency_index != 12U
+        || frequency_modifier != 0U
+        || replacement_set != 0U
+        || !valid_crc_bytes(payload, byte_offset, header_size)) {
+        return false;
+    }
+    header.offset = byte_offset;
+    header.size = header_size;
+    header.channels = static_cast<std::uint8_t>(channels);
+    return true;
+}
+
+bool parse_alternate_layout(
+    const XllExtension& extension,
+    std::vector<std::uint8_t>& payload,
+    AlternateLayout& layout) {
+    AlternateProfile profile;
+    switch (extension.sync_word) {
+    case kAlternateD0Sync:
+        profile = AlternateProfile::D0;
+        break;
+    case kAlternateD1Sync:
+        profile = AlternateProfile::D1;
+        break;
+    case kAlternateD2Sync:
+        profile = AlternateProfile::D2;
+        break;
+    case kAlternateD3Sync:
+        profile = AlternateProfile::D3;
+        break;
+    case kAlternateD4Sync:
+        profile = AlternateProfile::D4;
+        break;
+    default:
+        return false;
+    }
+    payload.clear();
+    payload.reserve(extension.payload.size() + 4U);
+    payload.push_back(static_cast<std::uint8_t>(
+        extension.sync_word >> 24U));
+    payload.push_back(static_cast<std::uint8_t>(
+        extension.sync_word >> 16U));
+    payload.push_back(static_cast<std::uint8_t>(
+        extension.sync_word >> 8U));
+    payload.push_back(static_cast<std::uint8_t>(extension.sync_word));
+    payload.insert(
+        payload.end(), extension.payload.begin(), extension.payload.end());
+
+    // Arcam dts_uhd_chunk_parser (sub_84185004) bounds parsing by the
+    // declared chunk length.  The leading CRC region is variable-sized;
+    // it is not limited to the 48/49-byte forms seen in short samples.
+    const std::size_t minimum_prefix = sizeof(std::uint32_t);
+    std::size_t prefix_end = 0U;
+    bool prefix_found = false;
+    for (std::size_t candidate = minimum_prefix;
+         candidate + kAlternateOuterSuffix.size() <= payload.size();
+         ++candidate) {
+        if (!std::equal(
+                kAlternateOuterSuffix.begin(),
+                kAlternateOuterSuffix.end(),
+                payload.begin() + static_cast<std::ptrdiff_t>(candidate))
+            || !valid_crc_bytes(payload, 0U, candidate)) {
+            continue;
+        }
+        if (prefix_found) {
+            return false;
+        }
+        prefix_found = true;
+        prefix_end = candidate;
+    }
+    if (!prefix_found) {
+        return false;
+    }
+    const std::size_t control_start =
+        prefix_end + kAlternateOuterSuffix.size();
+    if (control_start >= payload.size()) {
+        return false;
+    }
+    const std::uint8_t tag = payload[control_start];
+    const std::size_t control_size = tag == 0xB2U
+        ? 7U
+        : (tag >= 0xC2U && tag <= 0xC6U ? 8U : 0U);
+    if (control_size == 0U
+        || control_size > payload.size() - control_start) {
+        return false;
+    }
+    const std::vector<std::uint8_t> outer_control(
+        payload.begin() + static_cast<std::ptrdiff_t>(control_start),
+        payload.begin() + static_cast<std::ptrdiff_t>(
+            control_start + control_size));
+    std::size_t common_bit = 0U;
+    const std::size_t first_geometry_end =
+        profile == AlternateProfile::D3
+        ? 31U
+        : profile == AlternateProfile::D4 ? 26U : 25U;
+    if (!alternate_unique_geometry(
+            outer_control,
+            18U,
+            first_geometry_end,
+            common_bit,
+            layout.geometries[0])) {
+        return false;
+    }
+    const std::size_t first_header_offset =
+        control_start + control_size;
+    if (!alternate_header_at(
+            payload, first_header_offset, layout.headers[0])) {
+        return false;
+    }
+    // Arcam dts_object_decoder.c sub_84167A80 (0x84167BEC..0x84167C28)
+    // takes the channel count from the associated XLL decoder.  In
+    // particular, D0 is not a one-channel profile: valid D0 streams carry
+    // either one point-source waveform or a three-channel multi-point source.
+    // The sync suffix therefore cannot be used as a channel-count
+    // discriminator.
+    if (common_bit < 14U) {
+        return false;
+    }
+    const std::uint8_t field_width = static_cast<std::uint8_t>(
+        common_bit - 14U);
+    std::uint32_t encoded_span = 0U;
+    if (!read_bits_at(
+            outer_control, 9U, field_width, encoded_span)) {
+        return false;
+    }
+    const std::size_t nominal =
+        static_cast<std::size_t>(encoded_span) * 2U
+        + control_start + 12U;
+    bool second_found = false;
+    for (const std::size_t candidate : {
+             nominal,
+             nominal == 0U ? nominal : nominal - 1U}) {
+        AlternateHeader header;
+        if (!alternate_header_at(payload, candidate, header)
+            || header.channels != 4U) {
+            continue;
+        }
+        if (second_found) {
+            return false;
+        }
+        second_found = true;
+        layout.headers[1] = header;
+    }
+    if (!second_found) {
+        return false;
+    }
+    const std::size_t search_start =
+        layout.headers[1].offset > 24U
+        ? layout.headers[1].offset - 24U
+        : 0U;
+    std::size_t inner_suffix = 0U;
+    bool inner_found = false;
+    for (std::size_t candidate = search_start;
+         candidate + kAlternateInnerSuffix.size()
+             <= layout.headers[1].offset;
+         ++candidate) {
+        if (std::equal(
+                kAlternateInnerSuffix.begin(),
+                kAlternateInnerSuffix.end(),
+                payload.begin() + static_cast<std::ptrdiff_t>(candidate))) {
+            inner_found = true;
+            inner_suffix = candidate;
+        }
+    }
+    if (!inner_found) {
+        return false;
+    }
+    const std::size_t inner_start =
+        inner_suffix + kAlternateInnerSuffix.size();
+    const std::size_t inner_size =
+        layout.headers[1].offset - inner_start;
+    if (inner_size < 8U || inner_size > 9U) {
+        return false;
+    }
+    const std::vector<std::uint8_t> inner_control(
+        payload.begin() + static_cast<std::ptrdiff_t>(inner_start),
+        payload.begin() + static_cast<std::ptrdiff_t>(
+            layout.headers[1].offset));
+    std::size_t unused_bit = 0U;
+    const std::size_t second_geometry_start =
+        profile == AlternateProfile::D0 ? 18U : 19U;
+    return alternate_unique_geometry(
+        inner_control,
+        second_geometry_start,
+        26U,
+        unused_bit,
+        layout.geometries[1]);
+}
+
+bool decode_alternate_channel_set(
+    const std::vector<std::uint8_t>& payload,
+    const AlternateHeader& alternate_header,
+    const AlternateGeometry& geometry,
+    std::size_t boundary,
+    XllChannelSetDecoder& decoder,
+    XllChannelParameters& parameters,
+    std::vector<std::vector<std::int32_t>>& output) {
+    output.clear();
+    if (boundary > payload.size()
+        || alternate_header.offset > boundary
+        || alternate_header.size
+               > boundary - alternate_header.offset
+        || geometry.segments == 0U
+        || kAlternateFrameSamples % geometry.segments != 0U) {
+        return false;
+    }
+    XllCommonHeader common;
+    common.channel_set_count = 1U;
+    common.segments_per_frame = geometry.segments;
+    common.samples_per_segment = static_cast<std::uint32_t>(
+        kAlternateFrameSamples / geometry.segments);
+    common.segment_size_bits = geometry.navigation_size_bits;
+    common.band_crc_present = 0U;
+    common.scalable_lsb = false;
+    common.channel_set_header_size_bits = 1U;
+
+    bitstream::WordBuffer words(payload, false);
+    bitstream::Cursor source = words.cursor();
+    source.fast_forward(static_cast<std::int32_t>(
+        8U * alternate_header.offset));
+    XllChannelSetHeader header;
+    if (!unpack_xll_primary_channel_set_header(
+            source,
+            common,
+            header,
+            false,
+            0U,
+            nullptr,
+            2U)
+        || header.probe.channel_count != alternate_header.channels
+        || header.probe.channel_mask
+               != ((1U << alternate_header.channels) - 1U)
+        || header.bands.size() != 1U) {
+        return false;
+    }
+    XllNavigationTable navigation;
+    if (!unpack_xll_navigation_table(
+            source,
+            geometry.navigation_size_bits,
+            geometry.segments,
+            {1U},
+            navigation)
+        || !source.valid()) {
+        return false;
+    }
+    const bitstream::Cursor audio_start = source;
+    std::size_t audio_bytes = 0U;
+    for (const XllNavigationEntry& entry : navigation.entries) {
+        audio_bytes = (std::max)(
+            audio_bytes,
+            static_cast<std::size_t>(entry.byte_offset)
+                + entry.size_bytes);
+    }
+    const std::size_t navigation_end =
+        alternate_header.offset + alternate_header.size
+        + navigation.byte_size;
+    if (navigation_end > boundary
+        || audio_bytes > boundary - navigation_end
+        || boundary - navigation_end - audio_bytes
+               > kAlternateMaximumInterstitial) {
+        return false;
+    }
+    output.assign(
+        alternate_header.channels,
+        std::vector<std::int32_t>{});
+    const XllChannelSetBand& band = header.bands.front();
+    std::vector<std::uint8_t> adaptive_orders;
+    adaptive_orders.reserve(band.prediction.size());
+    for (const XllChannelPrediction& prediction : band.prediction) {
+        adaptive_orders.push_back(static_cast<std::uint8_t>(
+            prediction.adaptive_reflection_coefficients.size()));
+    }
+    for (std::uint32_t segment = 0U;
+         segment < geometry.segments;
+         ++segment) {
+        const XllNavigationEntry* entry = navigation.find(
+            0U, segment, 0U);
+        if (entry == nullptr || entry->size_bytes == 0U) {
+            return false;
+        }
+        bitstream::Cursor segment_source = audio_start;
+        segment_source.fast_forward(static_cast<std::int32_t>(
+            8U * entry->byte_offset));
+        segment_source = segment_source.limited(
+            8U * entry->size_bytes);
+        if (!unpack_xll_channel_parameters(
+                segment_source,
+                segment,
+                header.probe.parameter_bits,
+                adaptive_orders,
+                parameters)) {
+            return false;
+        }
+        XllDecodedChannelSet decoded;
+        if (!decoder.decode_msb_segment(
+                segment_source,
+                segment,
+                common.samples_per_segment,
+                parameters,
+                band.prediction,
+                band.channel_order,
+                0U,
+                0U,
+                band.joint_pairs,
+                decoded)
+            || !segment_source.valid()
+            || segment_source.remaining_bits() > 32U
+            || decoded.channels.size() != output.size()) {
+            return false;
+        }
+        for (std::size_t channel = 0U;
+             channel < output.size();
+             ++channel) {
+            output[channel].insert(
+                output[channel].end(),
+                decoded.channels[channel].begin(),
+                decoded.channels[channel].end());
+        }
+    }
+    const std::uint8_t shift = header.probe.bit_depth < 24U
+        ? static_cast<std::uint8_t>(24U - header.probe.bit_depth)
+        : 0U;
+    for (auto& channel : output) {
+        if (channel.size() != kAlternateFrameSamples) {
+            return false;
+        }
+        for (std::int32_t& sample : channel) {
+            sample = saturate_24(
+                static_cast<std::int64_t>(sample) << shift);
+        }
+    }
+    return true;
+}
+
+bool decode_alternate_extension(
+    const XllExtension& extension,
+    std::array<XllChannelSetDecoder, 2>& decoders,
+    std::array<XllChannelParameters, 2>& parameters,
+    std::vector<std::vector<std::int32_t>>& output) {
+    output.clear();
+    std::vector<std::uint8_t> payload;
+    AlternateLayout layout;
+    if (!parse_alternate_layout(extension, payload, layout)) {
+        return false;
+    }
+    std::array<std::vector<std::vector<std::int32_t>>, 2>
+        decoded_sets;
+    if (!decode_alternate_channel_set(
+            payload,
+            layout.headers[0],
+            layout.geometries[0],
+            layout.headers[1].offset,
+            decoders[0],
+            parameters[0],
+            decoded_sets[0])) {
+        return false;
+    }
+    if (!decode_alternate_channel_set(
+            payload,
+            layout.headers[1],
+            layout.geometries[1],
+            payload.size(),
+            decoders[1],
+            parameters[1],
+            decoded_sets[1])) {
+        return false;
+    }
+    for (auto& set : decoded_sets) {
+        for (auto& channel : set) {
+            output.push_back(std::move(channel));
+        }
+    }
+    return !output.empty();
+}
+
 std::int32_t rounded_multiply(
     std::int32_t left,
     std::int32_t right,
@@ -804,6 +1351,7 @@ bool XllFrameDecoder::decode_msb_frame(
         frame.extension.present =
             frame.extension.sync_word == 0x02000850U
             || frame.extension.sync_word == 0xF14000D1U
+            || frame.extension.sync_word == 0xF14000D2U
             || frame.extension.sync_word == 0xF14000D3U
             || frame.extension.sync_word == 0xF14000D4U
             || frame.extension.sync_word == 0xF14000D0U;
@@ -1892,6 +2440,26 @@ bool XllFrameDecoder::decode_msb_frame(
         frame.common.segments_per_frame
         * frame.common.samples_per_segment
         * (decoded_band_count > 1U ? 2U : 1U);
+    auto next_alternate_decoders = alternate_channel_decoders_;
+    auto next_alternate_parameters = alternate_channel_parameters_;
+    std::vector<std::vector<std::int32_t>> alternate_channels;
+    const bool alternate_decoded =
+        frame.samples_per_channel == kAlternateFrameSamples
+        && frame.sample_rate == 48000U
+        && decode_alternate_extension(
+            frame.extension,
+            next_alternate_decoders,
+            next_alternate_parameters,
+            alternate_channels);
+    if (alternate_decoded) {
+        frame.supplemental_speaker_masks.insert(
+            frame.supplemental_speaker_masks.end(),
+            alternate_channels.size(),
+            0U);
+        for (auto& channel : alternate_channels) {
+            frame.planar_channels.push_back(std::move(channel));
+        }
+    }
     frame.msb_complete = !frame.planar_channels.empty();
     if (frame.msb_complete) {
         channel_decoders_ =
@@ -1904,6 +2472,12 @@ bool XllFrameDecoder::decode_msb_frame(
             std::move(current_downmix_inverse_scales);
         previous_raw_channel_set_headers_ =
             std::move(raw_channel_sets);
+        if (alternate_decoded) {
+            alternate_channel_decoders_ =
+                std::move(next_alternate_decoders);
+            alternate_channel_parameters_ =
+                std::move(next_alternate_parameters);
+        }
     }
     return frame.msb_complete;
 }

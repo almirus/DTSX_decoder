@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -73,6 +74,29 @@ ObjectStemWriter::ObjectStemWriter(
         throw std::runtime_error("invalid object stem output settings");
     }
     std::filesystem::create_directories(directory_);
+    if (overwrite_) {
+        static constexpr wchar_t kSupplementalPrefix[] =
+            L"unmapped_supplemental_waveform_";
+        static constexpr wchar_t kWavSuffix[] = L".wav";
+        for (const std::filesystem::directory_entry& entry :
+             std::filesystem::directory_iterator(directory_)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const std::wstring name = entry.path().filename().wstring();
+            if (name.rfind(kSupplementalPrefix, 0U) != 0U
+                || name.size() < std::size(kSupplementalPrefix) - 1U
+                       + std::size(kWavSuffix) - 1U
+                || name.compare(
+                       name.size() - (std::size(kWavSuffix) - 1U),
+                       std::size(kWavSuffix) - 1U,
+                       kWavSuffix)
+                       != 0) {
+                continue;
+            }
+            std::filesystem::remove(entry.path());
+        }
+    }
 }
 
 std::filesystem::path ObjectStemWriter::stem_path(
@@ -104,6 +128,30 @@ WavWriter& ObjectStemWriter::wav(const StemKey& key) {
     return result;
 }
 
+WavWriter& ObjectStemWriter::supplemental_wav(
+    std::uint32_t waveform) {
+    auto found = supplemental_wavs_.find(waveform);
+    if (found != supplemental_wavs_.end()) {
+        return *found->second;
+    }
+    const auto mono = find_layout("mono");
+    if (!mono) {
+        throw std::runtime_error("mono layout is unavailable");
+    }
+    std::wostringstream name;
+    name << L"unmapped_supplemental_waveform_"
+         << std::setw(3) << std::setfill(L'0') << waveform
+         << L".wav";
+    auto writer = std::make_unique<WavWriter>(
+        directory_ / name.str(),
+        *mono,
+        sample_rate_,
+        overwrite_);
+    WavWriter& result = *writer;
+    supplemental_wavs_.emplace(waveform, std::move(writer));
+    return result;
+}
+
 ObjectSidecarWriter& ObjectStemWriter::coordinates(
     const StemKey& key) {
     auto found = coordinate_writers_.find(key);
@@ -129,6 +177,84 @@ bool ObjectStemWriter::write(
     timeline_end_ = std::max(
         timeline_end_,
         sample_position + duration_samples);
+    std::vector<bool> semantically_mapped_waveform_channels(
+        frame.waveform_channels.size(), false);
+    for (std::size_t waveform = 0U;
+         waveform < semantically_mapped_waveform_channels.size()
+             && waveform < frame.waveform_speaker_masks.size();
+         ++waveform) {
+        semantically_mapped_waveform_channels[waveform] =
+            frame.waveform_speaker_masks[waveform] != 0U;
+    }
+    for (const dtsx::ObjectMetadataBlock& object : frame.objects) {
+        std::vector<std::uint32_t> channel_indices;
+        if (!dtsx::object_waveform_channel_indices(
+                object,
+                channel_indices,
+                &frame.waveform_base_by_id)) {
+            continue;
+        }
+        for (const std::uint32_t channel : channel_indices) {
+            if (channel
+                < semantically_mapped_waveform_channels.size()) {
+                semantically_mapped_waveform_channels[channel] = true;
+            }
+        }
+    }
+    std::uint32_t supplemental_waveform = 0U;
+    for (std::size_t channel = 0U;
+         channel < frame.waveform_channels.size()
+             && channel < frame.waveform_is_supplemental.size()
+             && channel < frame.waveform_speaker_masks.size();
+         ++channel) {
+        if (!frame.waveform_is_supplemental[channel]
+            || frame.waveform_speaker_masks[channel] != 0U) {
+            continue;
+        }
+        const std::uint32_t supplemental_index =
+            supplemental_waveform++;
+        if (frame.waveform_channels[channel].size()
+            != duration_samples) {
+            continue;
+        }
+        bool duplicates_mapped_waveform = false;
+        for (std::size_t mapped_channel = 0U;
+             mapped_channel
+                 < semantically_mapped_waveform_channels.size();
+             ++mapped_channel) {
+            if (!semantically_mapped_waveform_channels[mapped_channel]
+                || mapped_channel == channel
+                || frame.waveform_channels[mapped_channel].size()
+                       != duration_samples) {
+                continue;
+            }
+            if (frame.waveform_channels[channel]
+                == frame.waveform_channels[mapped_channel]) {
+                duplicates_mapped_waveform = true;
+                break;
+            }
+        }
+        if (duplicates_mapped_waveform) {
+            continue;
+        }
+        WavWriter& stem = supplemental_wav(supplemental_index);
+        if (stem.frames_written() > sample_position) {
+            return false;
+        }
+        constexpr std::size_t kSilenceBlockSamples = 4096U;
+        while (stem.frames_written() < sample_position) {
+            const std::uint64_t missing =
+                sample_position - stem.frames_written();
+            const std::size_t block_size =
+                static_cast<std::size_t>(
+                    std::min<std::uint64_t>(
+                        missing, kSilenceBlockSamples));
+            stem.write_planar_24({
+                std::vector<std::int32_t>(block_size, 0),
+            });
+        }
+        stem.write_planar_24({frame.waveform_channels[channel]});
+    }
     if (frame.objects.empty()) {
         // Waveform decoders can start before their object metadata. Wait for
         // the metadata block so only the referenced channels are exported.
@@ -337,6 +463,21 @@ bool ObjectStemWriter::write(
 
 void ObjectStemWriter::close() {
     for (auto& entry : wavs_) {
+        constexpr std::size_t kSilenceBlockSamples = 4096U;
+        while (entry.second->frames_written() < timeline_end_) {
+            const std::uint64_t missing =
+                timeline_end_ - entry.second->frames_written();
+            const std::size_t block_size =
+                static_cast<std::size_t>(
+                    std::min<std::uint64_t>(
+                        missing, kSilenceBlockSamples));
+            entry.second->write_planar_24({
+                std::vector<std::int32_t>(block_size, 0),
+            });
+        }
+        entry.second->close();
+    }
+    for (auto& entry : supplemental_wavs_) {
         constexpr std::size_t kSilenceBlockSamples = 4096U;
         while (entry.second->frames_written() < timeline_end_) {
             const std::uint64_t missing =

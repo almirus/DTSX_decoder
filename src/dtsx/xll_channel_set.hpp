@@ -68,6 +68,7 @@ struct XllChannelSetHeader final {
     XllChannelSetHeader& header,
     bool one_to_one_mapping = false,
     std::uint32_t preceding_hierarchy_channels = 0U,
-    const XllChannelSetHeader* previous_header = nullptr) noexcept;
+    const XllChannelSetHeader* previous_header = nullptr,
+    std::uint8_t alternate_prefix_bits = 0U) noexcept;
 
 } // namespace dtsx

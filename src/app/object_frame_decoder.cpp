@@ -1,6 +1,7 @@
 #include "app/object_frame_decoder.hpp"
 
 #include "bitstream/dtsx_word_buffer.hpp"
+#include "dtsx/crc16.hpp"
 #include "dtsx/exss_asset.hpp"
 #include "dtsx/exss_header.hpp"
 #include "dtsx/metadata_chunk.hpp"
@@ -26,6 +27,87 @@ struct AssociatedWaveformRange final {
     std::uint32_t channel_count = 0U;
     bool renderer_auxiliary_metadata_present = false;
 };
+
+std::vector<std::uint8_t> resolve_metadata_element_sizes(
+    dtsx::bitstream::Cursor metadata_source,
+    const std::vector<std::uint8_t>& descriptor_sizes,
+    const std::vector<std::uint8_t>& associated_chunk_types) {
+    // visio-libdtsx.so.c PrelimParseChunks: sub_8AC78 advances the metadata
+    // cursor before sub_89E90 parses the associated audio list.  A CRC-valid
+    // metadata boundary is authoritative only when that advanced cursor also
+    // yields the declared type-65/type-68 XLL chunks.  This disambiguates
+    // adjacent CRC-valid boundaries without scanning outside the native list.
+    if (descriptor_sizes.empty()
+        || associated_chunk_types.empty()) {
+        return descriptor_sizes;
+    }
+    const std::uint32_t available_bytes =
+        metadata_source.remaining_bits() / 8U;
+    const std::uint32_t overhead =
+        2U * static_cast<std::uint32_t>(descriptor_sizes.size()) + 2U;
+    std::uint32_t prefix_payload_size = 0U;
+    for (std::size_t index = 0U;
+         index + 1U < descriptor_sizes.size();
+         ++index) {
+        prefix_payload_size += descriptor_sizes[index];
+    }
+
+    std::vector<std::uint8_t> resolved = descriptor_sizes;
+    std::size_t best_associated_chunks = 0U;
+    for (std::uint32_t last_size = 0U;
+         last_size <= 0xFFU;
+         ++last_size) {
+        const std::uint32_t region_size =
+            prefix_payload_size + last_size + overhead;
+        if (region_size > available_bytes) {
+            continue;
+        }
+        dtsx::bitstream::Cursor crc_source = metadata_source;
+        if (!dtsx::valid_crc16(crc_source, 8U * region_size)) {
+            continue;
+        }
+
+        dtsx::bitstream::Cursor associated_source = metadata_source;
+        associated_source.fast_forward(
+            static_cast<std::int32_t>(8U * region_size));
+        std::size_t parsed_chunks = 0U;
+        for (const std::uint8_t chunk_type : associated_chunk_types) {
+            if (chunk_type != 65U && chunk_type != 68U) {
+                break;
+            }
+            if (associated_source.remaining_bits() < 40U) {
+                break;
+            }
+            associated_source.fast_forward(8);
+            const std::uint32_t sync =
+                associated_source.lookahead_unsigned(32U);
+            if (sync != dtsx::kXllSync
+                && sync != dtsx::kXllSyncLegacy) {
+                break;
+            }
+            dtsx::bitstream::Cursor common_source = associated_source;
+            dtsx::XllCommonHeader common;
+            if (!dtsx::unpack_xll_common_header(
+                    common_source, common)
+                || common.frame_size == 0U
+                || 8U * common.frame_size
+                       > associated_source.remaining_bits()) {
+                break;
+            }
+            associated_source.fast_forward(
+                static_cast<std::int32_t>(
+                    8U * common.frame_size));
+            ++parsed_chunks;
+        }
+        if (parsed_chunks > best_associated_chunks) {
+            best_associated_chunks = parsed_chunks;
+            resolved.back() = static_cast<std::uint8_t>(last_size);
+        }
+    }
+    return best_associated_chunks == 0U
+        ? descriptor_sizes
+        : resolved;
+}
 
 void merge_sparse_gain_set(
     bool update_present,
@@ -604,9 +686,14 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             const std::uint64_t available_metadata_bytes =
                 metadata_source.remaining_bits() / 8U;
             dtsx::MetadataChunkEnvelope envelope;
-            if (dtsx::unpack_metadata_chunk_payload(
+            const std::vector<std::uint8_t> metadata_element_sizes =
+                resolve_metadata_element_sizes(
                     metadata_source,
                     asset.xll_metadata_chunk_sizes,
+                    asset.xll_associated_chunk_types);
+            if (dtsx::unpack_metadata_chunk_payload(
+                    metadata_source,
+                    metadata_element_sizes,
                     envelope,
                     static_cast<std::uint8_t>(
                         exss.asset_count))) {

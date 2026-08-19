@@ -289,7 +289,8 @@ bool unpack_xll_primary_channel_set_header(
     XllChannelSetHeader& header,
     bool one_to_one_mapping,
     std::uint32_t preceding_hierarchy_channels,
-    const XllChannelSetHeader* previous_header) noexcept {
+    const XllChannelSetHeader* previous_header,
+    std::uint8_t alternate_prefix_bits) noexcept {
     // libdtsx.so: dtsx_decodeXLLChSetHeader primary-stream path,
     // 0xb263c..0xb2e2c.
     const bitstream::Cursor header_start = source;
@@ -363,7 +364,17 @@ bool unpack_xll_primary_channel_set_header(
             source.extract_unsigned(1U) != 0U;
     }
 
-    if (one_to_one_mapping) {
+    if (alternate_prefix_bits != 0U) {
+        if (alternate_prefix_bits > source.remaining_bits()) {
+            source = header_start;
+            source.fast_forward(static_cast<std::int32_t>(
+                8U * probe.header_size));
+            return false;
+        }
+        source.fast_forward(alternate_prefix_bits);
+        header.primary_channel_set = true;
+        header.hierarchical_channel_set = true;
+    } else if (one_to_one_mapping) {
         header.primary_channel_set =
             source.extract_unsigned(1U) != 0U;
         header.downmix_coefficients_present =

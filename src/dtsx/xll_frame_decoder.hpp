@@ -7,6 +7,7 @@
 #include "dtsx/xll_navigation.hpp"
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,10 @@ private:
         downmix_inverse_scales_;
     std::vector<XllChannelSetHeader>
         previous_raw_channel_set_headers_;
+    std::array<XllChannelSetDecoder, 2>
+        alternate_channel_decoders_;
+    std::array<XllChannelParameters, 2>
+        alternate_channel_parameters_;
     std::string last_error_;
 };
 
