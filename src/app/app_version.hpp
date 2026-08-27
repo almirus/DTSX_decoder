@@ -4,7 +4,7 @@
 
 namespace dtsx_decode {
 
-inline constexpr const char* kVersion = "0.2.2 beta (unmapped 🗺️)";
+inline constexpr const char* kVersion = "0.2.4 beta (unmapped 🗺️)";
 inline constexpr const char* kAuthor = "@almirus";
 
 inline std::string make_decode_comment() {

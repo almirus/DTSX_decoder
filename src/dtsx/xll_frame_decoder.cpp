@@ -615,8 +615,10 @@ bool decode_alternate_extension(
     const XllExtension& extension,
     std::array<XllChannelSetDecoder, 2>& decoders,
     std::array<XllChannelParameters, 2>& parameters,
-    std::vector<std::vector<std::int32_t>>& output) {
+    std::vector<std::vector<std::int32_t>>& output,
+    std::vector<std::uint32_t>& speaker_masks) {
     output.clear();
+    speaker_masks.clear();
     std::vector<std::uint8_t> payload;
     AlternateLayout layout;
     if (!parse_alternate_layout(extension, payload, layout)) {
@@ -649,7 +651,13 @@ bool decode_alternate_extension(
             output.push_back(std::move(channel));
         }
     }
-    return !output.empty();
+    if (output.empty()) {
+        return false;
+    }
+    speaker_masks = alternate_extension_speaker_masks(
+        layout.headers[0].channels,
+        output.size());
+    return true;
 }
 
 std::int32_t rounded_multiply(
@@ -1432,9 +1440,7 @@ bool XllFrameDecoder::decode_msb_frame(
             XllSupplementalChannelSet supplemental{
                 supplemental_source};
             static constexpr std::array<std::uint32_t, 4>
-                kHeightSpeakers = {
-                    1U << 13U, 1U << 15U,
-                    1U << 23U, 1U << 24U};
+                kHeightSpeakers = kStandardHeightSpeakerMasks;
             static constexpr std::array<std::uint32_t, 4>
                 kFoldedBedSpeakers = {
                     1U << 1U, 1U << 2U,
@@ -2443,6 +2449,7 @@ bool XllFrameDecoder::decode_msb_frame(
     auto next_alternate_decoders = alternate_channel_decoders_;
     auto next_alternate_parameters = alternate_channel_parameters_;
     std::vector<std::vector<std::int32_t>> alternate_channels;
+    std::vector<std::uint32_t> alternate_speaker_masks;
     const bool alternate_decoded =
         frame.samples_per_channel == kAlternateFrameSamples
         && frame.sample_rate == 48000U
@@ -2450,12 +2457,19 @@ bool XllFrameDecoder::decode_msb_frame(
             frame.extension,
             next_alternate_decoders,
             next_alternate_parameters,
-            alternate_channels);
+            alternate_channels,
+            alternate_speaker_masks);
     if (alternate_decoded) {
+        if (alternate_speaker_masks.size()
+            != alternate_channels.size()) {
+            frame = {};
+            last_error_ = "alternate extension speaker mapping";
+            return false;
+        }
         frame.supplemental_speaker_masks.insert(
             frame.supplemental_speaker_masks.end(),
-            alternate_channels.size(),
-            0U);
+            alternate_speaker_masks.begin(),
+            alternate_speaker_masks.end());
         for (auto& channel : alternate_channels) {
             frame.planar_channels.push_back(std::move(channel));
         }

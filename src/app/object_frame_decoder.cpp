@@ -881,6 +881,12 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             }
             decoded.supplemental_downmix_outputs =
                 std::move(xll.embedded_downmix_outputs);
+            for (const std::uint32_t speaker_mask :
+                 xll.supplemental_speaker_masks) {
+                decoded.supplemental_speaker_activity_mask |=
+                    dtsx::speaker_mask_to_activity_mask(
+                        speaker_mask);
+            }
         }
 
         // PrelimParseChunks/sub_89E90 stores an exact cursor and length for
@@ -1538,8 +1544,12 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         for (std::uint32_t channel = 0U;
              channel < range.channel_count;
              ++channel) {
-            std::uint32_t speaker_mask = 0U;
-            if (!dtsx::standard_speaker_mask(
+            std::uint32_t speaker_mask =
+                channel < dtsx::kStandardHeightSpeakerMasks.size()
+                ? dtsx::kStandardHeightSpeakerMasks[channel]
+                : 0U;
+            if (speaker_mask == 0U
+                && !dtsx::standard_speaker_mask(
                     kUpperLayerOrder[channel],
                     speaker_mask)) {
                 break;
@@ -1549,6 +1559,9 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             decoded.waveform_speaker_masks[waveform] =
                 speaker_mask;
             decoded.waveform_is_supplemental[waveform] = true;
+            decoded.supplemental_speaker_activity_mask |=
+                dtsx::speaker_mask_to_activity_mask(
+                    speaker_mask);
         }
     }
     return decoded.waveform_channels.empty()

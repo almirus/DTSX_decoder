@@ -61,8 +61,9 @@ if errorlevel 1 exit /b 1
 
 cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   /D_CRT_SECURE_NO_WARNINGS /D_USE_MATH_DEFINES /DNDEBUG ^
-  /wd4146 /I. /Isrc /Ithird_party\dcadec ^
+  /wd4146 /I. /Isrc /Ithird_party\dcadec /Ithird_party\qrcodegen ^
   src\app\main.cpp src\app\object_frame_decoder.cpp src\app\options.cpp ^
+  src\app\support_qr.cpp third_party\qrcodegen\qrcodegen.cpp ^
   src\app\pipeline.cpp src\audio\dca_bed_decoder.cpp ^
   src\audio\layout.cpp ^
   src\bitstream\dtsx_bitstream.cpp src\bitstream\dtsx_segment.cpp ^
@@ -104,6 +105,8 @@ cl /nologo ^
   bin\obj\dtsx-decode\main.obj ^
   bin\obj\dtsx-decode\object_frame_decoder.obj ^
   bin\obj\dtsx-decode\options.obj ^
+  bin\obj\dtsx-decode\support_qr.obj ^
+  bin\obj\dtsx-decode\qrcodegen.obj ^
   bin\obj\dtsx-decode\pipeline.obj ^
   bin\obj\dtsx-decode\dca_bed_decoder.obj ^
   bin\obj\dtsx-decode\layout.obj ^

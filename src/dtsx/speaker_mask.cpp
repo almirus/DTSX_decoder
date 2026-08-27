@@ -43,7 +43,7 @@ struct SpeakerCoordinateEntry final {
 };
 
 // libdtsx.so: sub_DAE54 standard destination coordinates.
-constexpr std::array<SpeakerCoordinateEntry, 18>
+constexpr std::array<SpeakerCoordinateEntry, 20>
     kStandardSpeakerCoordinates = {{
         {0U, 0.0F, 0.0F, "FC"},
         {1U, -30.0F, 0.0F, "FL"},
@@ -55,8 +55,12 @@ constexpr std::array<SpeakerCoordinateEntry, 18>
         {8U, 150.0F, 0.0F, "BR"},
         {9U, -90.0F, 0.0F, "LSS"},
         {10U, 90.0F, 0.0F, "RSS"},
-        {11U, -60.0F, 0.0F, "LW"},
-        {12U, 60.0F, 0.0F, "RW"},
+        // DTS physical speaker-mask values (libdtsx.so: sub_DA3BC):
+        // 0x0800/0x1000 are Lc/Rc, while 0x020000/0x040000 are Lw/Rw.
+        {11U, -15.0F, 0.0F, "Lc"},
+        {12U, 15.0F, 0.0F, "Rc"},
+        {17U, -60.0F, 0.0F, "Lw"},
+        {18U, 60.0F, 0.0F, "Rw"},
         {13U, -45.0F, 45.0F, "TFL"},
         {14U, 0.0F, 45.0F, "TFC"},
         {15U, 45.0F, 45.0F, "TFR"},
@@ -185,6 +189,26 @@ bool standard_speaker_name(
 
     name = {};
     return false;
+}
+
+std::vector<std::uint32_t> alternate_extension_speaker_masks(
+    std::size_t first_set_channel_count,
+    std::size_t total_channel_count) noexcept {
+    std::vector<std::uint32_t> masks(
+        total_channel_count,
+        0U);
+    if (first_set_channel_count > total_channel_count) {
+        return masks;
+    }
+    const std::size_t upper_layer_start = first_set_channel_count;
+    for (std::size_t channel = 0U;
+         channel < kStandardHeightSpeakerMasks.size()
+             && upper_layer_start + channel < total_channel_count;
+         ++channel) {
+        masks[upper_layer_start + channel] =
+            kStandardHeightSpeakerMasks[channel];
+    }
+    return masks;
 }
 
 bool standard_speaker_mask(

@@ -2,6 +2,7 @@
 #include "options.hpp"
 #include "pipeline.hpp"
 #include "progress.hpp"
+#include "support_qr.hpp"
 #include "../io/ffmpeg.hpp"
 
 #include <exception>
@@ -58,19 +59,6 @@ void print_version() {
         << "Author: " << dtsx_decode::kAuthor << '\n';
 }
 
-void print_support_author() {
-    const bool color =
-        dtsx_decode::console_style::color_enabled(stdout);
-    std::cout << "Поддержать автора:  ";
-    dtsx_decode::console_style::paint(
-        std::cout, color, dtsx_decode::console_style::bold);
-    dtsx_decode::console_style::paint(
-        std::cout, color, dtsx_decode::console_style::bright_magenta);
-    std::cout << "2200 7009 5155 4582";
-    dtsx_decode::console_style::reset(std::cout, color);
-    std::cout << '\n';
-}
-
 void print_expiration_message() {
     std::cerr
         << "error: срок действия этой beta-версии истёк.\n"
@@ -90,7 +78,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (options.version) {
             print_version();
-            print_support_author();
+            dtsx_decode::print_support_author();
             return 0;
         }
         if (application_expired()) {
@@ -98,7 +86,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
         print_version();
-        print_support_author();
+        dtsx_decode::print_support_author();
         dtsx_decode::require_ffmpeg_in_path();
         return dtsx_decode::run_pipeline(options);
     } catch (const std::exception& error) {

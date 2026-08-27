@@ -2,6 +2,7 @@
 
 #include "app_version.hpp"
 #include "progress.hpp"
+#include "support_qr.hpp"
 #include "../audio/layout.hpp"
 
 #include <iostream>
@@ -250,13 +251,7 @@ void print_help() {
         << "dtsx-decode " << kVersion
         << " - DTS:X object decoder/render pipeline\n"
         << "Author: " << kAuthor << '\n';
-    const bool color = console_style::color_enabled(stdout);
-    std::cout << "Поддержать автора:  ";
-    console_style::paint(std::cout, color, console_style::bold);
-    console_style::paint(
-        std::cout, color, console_style::bright_magenta);
-    std::cout << "2200 7009 5155 4582";
-    console_style::reset(std::cout, color);
+    print_support_author();
     std::cout
         << "\n\nUsage:\n"
         << "  dtsx-decode -i INPUT [options]\n\n"

@@ -217,6 +217,26 @@ enum class DtsTrackRank : unsigned {
     DtsX = 4U,
 };
 
+bool has_core_hra_dtsx_envelope(
+    const dtsx::ElementaryFrame& frame) noexcept {
+    if (frame.bytes.size() < 10U) {
+        return false;
+    }
+    for (std::size_t i = 0U; i + 9U < frame.bytes.size(); ++i) {
+        if (frame.bytes[i] == 0x3AU
+            && frame.bytes[i + 1U] == 0x42U
+            && frame.bytes[i + 2U] == 0x9BU
+            && frame.bytes[i + 3U] == 0x0AU
+            && frame.bytes[i + 6U] == 0x02U
+            && frame.bytes[i + 7U] == 0x00U
+            && frame.bytes[i + 8U] == 0x08U
+            && frame.bytes[i + 9U] == 0x50U) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void classify_dts_frame(
     const dtsx::ElementaryFrame& frame,
     DtsTrackRank& rank) {
@@ -227,7 +247,17 @@ void classify_dts_frame(
     if (frame.packing != dtsx::StreamPacking::ExtensionBigEndian
         && frame.packing
             != dtsx::StreamPacking::ExtensionLittleEndian) {
-        rank = (std::max)(rank, DtsTrackRank::Dts);
+        // DTS-HD HRA DTS:X carries the metadata envelope in the core
+        // frame tail.  The native decoder selects DecStream_Core for this
+        // path (libdtsx.so.c, DTSXDecFramePlayer_SAPI_DecStream_Core), so
+        // do not classify it as plain DTS when the native envelope marker
+        // is present.  The marker is not a heuristic: it is the defined
+        // 0x3A429B0A metadata envelope followed by the 0x02000850 HRA
+        // extension sync used by the reference implementation.
+        const bool hra_dtsx = has_core_hra_dtsx_envelope(frame);
+        rank = (std::max)(
+            rank,
+            hra_dtsx ? DtsTrackRank::DtsX : DtsTrackRank::Dts);
         return;
     }
     const bool swap =
@@ -328,6 +358,21 @@ DtsTrackRank inspect_selected_dts_profile(const Options& options) {
         }
     }
     return rank;
+}
+
+bool inspect_core_hra_dtsx(const Options& options) {
+    Options probe_options = options;
+    probe_options.probe = true;
+    probe_options.full_probe = false;
+    DtsFrameReader reader(probe_options);
+    dtsx::ElementaryFrame frame;
+    std::uint32_t frames = 0U;
+    while (frames++ < 256U && reader.read(frame)) {
+        if (has_core_hra_dtsx_envelope(frame)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 unsigned select_default_dts_track(const Options& options) {
@@ -1051,21 +1096,24 @@ void print_decode_summary(
 void print_layout_recommendations(
     const ChannelLayout& layout,
     const ChannelCapacity& capacity) {
-    if (layout.name != "5.1" && layout.name != "7.1") {
+    const bool is_five_point_one =
+        layout.name == "5.1" || layout.name == "5.1(side)";
+    const bool is_seven_point_one = layout.name == "7.1";
+    if (!is_five_point_one && !is_seven_point_one) {
         return;
     }
     if (capacity.any_positive_height_object) {
         std::cerr
             << "Recommendation: objects with positive elevation were "
                "detected; use the "
-            << (layout.name == "5.1" ? "5.1.4" : "7.1.4") << ".\n";
+            << (is_five_point_one ? "5.1.4" : "7.1.4") << ".\n";
     }
     if (has_single_static_center_imax_object(capacity)) {
         std::cerr
             << "Warning: one static center object was detected with the "
                "IMAX metadata flag. This is a virtual IMAX height channel; "
                "the recommended layout is "
-            << (layout.name == "5.1" ? "5.1.4" : "7.1.4") << ".\n";
+            << (is_five_point_one ? "5.1.4" : "7.1.4") << ".\n";
     }
 }
 
@@ -1737,6 +1785,7 @@ void run_internal_probe(
     std::uint32_t detected_supplemental_activity_mask = 0U;
     SupplementalLayoutEvidence supplemental_layout_evidence;
     bool detected_imax_enhanced = false;
+    bool detected_core_embedded_dtsx = false;
     bool detected_uhd_type1_certified_content = false;
     std::uint32_t detected_dtsx_extension_sync_word = 0U;
     std::uint32_t ignored_unmapped_objects = 0U;
@@ -2227,6 +2276,11 @@ void run_internal_probe(
                        == dtsx::StreamPacking::Core14BitLittleEndian) {
             ++core_frame_count;
             core_byte_count += frame.bytes.size();
+            if (has_core_hra_dtsx_envelope(frame)) {
+                detected_core_embedded_dtsx = true;
+                detected_dtsx_extension_sync_word = 0x02000850U;
+                ++raw_metadata_envelope_count;
+            }
             dca_bed_decoder.remember_core(frame);
             const DcaCoreStreamInfo& core_info =
                 dca_bed_decoder.core_stream_info();
@@ -2313,6 +2367,7 @@ void run_internal_probe(
         || metadata_chunk_count != 0U
         || raw_metadata_envelope_count != 0U
         || detected_dtsx_extension_sync_word != 0U
+        || detected_core_embedded_dtsx
         || detected_imax_enhanced;
     const bool channel_based_dtsx =
         dtsx_profile
@@ -2414,6 +2469,11 @@ void run_internal_probe(
                 "DTS:X extension profile",
                 extension_profile);
         }
+    }
+    if (detected_core_embedded_dtsx) {
+        print_probe_field(
+            "Core DTS:X envelope",
+            "0x3a429b0a + 0x02000850 (HRA)");
     }
     if (detected_imax_enhanced) {
         if (detected_uhd_type1_certified_content) {
@@ -3723,9 +3783,9 @@ void dump_metadata(const Options& options, const std::filesystem::path& path) {
                                     speaker_mask,
                                     61U,
                                     0U);
-                            }
-                        }
-                    }
+            }
+        }
+    }
                 }
                 metadata_sample_position +=
                     metadata_frame_duration;
@@ -4092,6 +4152,19 @@ bool map_supplemental_xll_to_height_layout(
         layout.channels.size(), false);
     std::vector<bool> mapped_waveforms(
         decoded.waveform_channels.size(), false);
+    std::vector<std::size_t> height_outputs;
+    for (std::size_t candidate = 0U;
+         candidate < layout.channels.size();
+         ++candidate) {
+        const std::string_view name = layout.channels[candidate];
+        if (name == "TFL" || name == "TFR"
+            || name == "TBL" || name == "TBR"
+            || name == "TFC" || name == "TBC"
+            || name == "Oh") {
+            height_outputs.push_back(candidate);
+        }
+    }
+    std::size_t fallback_height = 0U;
     for (std::size_t waveform = 0U;
          waveform < decoded.waveform_channels.size();
          ++waveform) {
@@ -4104,9 +4177,37 @@ bool map_supplemental_xll_to_height_layout(
             return false;
         }
         if (decoded.waveform_speaker_masks[waveform] == 0U) {
-            if (!duplicates_semantically_mapped_waveform(
+            if (duplicates_semantically_mapped_waveform(
                     decoded, waveform, semantically_mapped)) {
-                return false;
+                mapped_waveforms[waveform] = true;
+                continue;
+            }
+            // Native object rendering has no coordinate fallback for a
+            // decoder that was not selected by type-241 metadata.  Preserve
+            // its audio nevertheless: for a layout with height outputs,
+            // fold distinct unmapped supplemental waveforms into the height
+            // bus instead of abandoning the complete supplemental render.
+            // This is intentionally not used as a speaker-mask claim.
+            if (height_outputs.empty()) {
+                continue;
+            }
+            const std::size_t output =
+                height_outputs[fallback_height % height_outputs.size()];
+            ++fallback_height;
+            for (std::size_t sample = 0U;
+                 sample < decoded.samples_per_channel;
+                 ++sample) {
+                const std::int64_t mixed =
+                    static_cast<std::int64_t>(planar[output][sample])
+                    + decoded.waveform_channels[waveform][sample];
+                planar[output][sample] = static_cast<std::int32_t>(
+                    (std::max)(
+                        static_cast<std::int64_t>(
+                            (std::numeric_limits<std::int32_t>::min)()),
+                        (std::min)(
+                            static_cast<std::int64_t>(
+                                (std::numeric_limits<std::int32_t>::max)()),
+                            mixed)));
             }
             mapped_waveforms[waveform] = true;
             continue;
@@ -4350,7 +4451,8 @@ std::uint64_t render_object_stream(
     const std::filesystem::path& output_path,
     RenderMode render_mode,
     std::uint32_t* rendered_sample_rate = nullptr,
-    ChannelCapacity* recommendation_capacity = nullptr) {
+    ChannelCapacity* recommendation_capacity = nullptr,
+    bool core_embedded_dtsx = false) {
     DtsFrameReader reader(options);
     ObjectFrameDecoder decoder;
     DcaBedDecoder dca_bed_decoder;
@@ -4415,40 +4517,60 @@ std::uint64_t render_object_stream(
                     ? -1
                     : decode_percent(elementary_bytes, elementary_size));
         }
+        DcaDecodedBed decoded_bed;
+        DecodedObjectAudioFrame decoded;
+        ObjectFrameDecodeResult decode_result =
+            ObjectFrameDecodeResult::Ignored;
+        bool decoded_bed_available = false;
         if (elementary.packing
                 != dtsx::StreamPacking::ExtensionBigEndian
             && elementary.packing
                 != dtsx::StreamPacking::ExtensionLittleEndian) {
             dca_bed_decoder.remember_core(elementary);
-            continue;
-        }
-        DcaDecodedBed decoded_bed;
-        const auto lossy_base = make_xll_lossy_base(
-            dca_bed_decoder.decoded_core());
-        std::future<bool> decoded_bed_future;
-        bool decoded_bed_available = false;
-        if (parallel_decode) {
-            decoded_bed_future = bed_worker->submit(
-                [&dca_bed_decoder,
-                 &elementary,
-                 &decoded_bed,
-                 &options] {
-                    return dca_bed_decoder.decode_extension(
+            if (!core_embedded_dtsx) {
+                continue;
+            }
+            decoded_bed = dca_bed_decoder.decoded_core();
+            decoded_bed_available = !decoded_bed.channels.empty();
+            if (!decoded_bed_available) {
+                throw std::runtime_error(
+                    "embedded DTS:X HRA core bed decode failed: "
+                    + dca_bed_decoder.last_error());
+            }
+            decoded.bed_channels = decoded_bed.channels;
+            decoded.bed_speaker_activity_mask =
+                decoded_bed.speaker_activity_mask;
+            decoded.sample_rate = decoded_bed.sample_rate;
+            decoded.samples_per_channel =
+                decoded_bed.samples_per_channel;
+        } else {
+            const auto lossy_base = make_xll_lossy_base(
+                dca_bed_decoder.decoded_core());
+            std::future<bool> decoded_bed_future;
+            if (parallel_decode) {
+                decoded_bed_future = bed_worker->submit(
+                    [&dca_bed_decoder,
+                     &elementary,
+                     &decoded_bed,
+                     &options] {
+                        return dca_bed_decoder.decode_extension(
+                            elementary,
+                            decoded_bed,
+                            !options.upmix);
+                    });
+            } else {
+                decoded_bed_available =
+                    dca_bed_decoder.decode_extension(
                         elementary,
                         decoded_bed,
                         !options.upmix);
-                });
-        } else {
-            decoded_bed_available =
-                dca_bed_decoder.decode_extension(
-                    elementary,
-                    decoded_bed,
-                    !options.upmix);
-        }
-        DecodedObjectAudioFrame decoded;
-        const ObjectFrameDecodeResult decode_result =
-            decoder.decode(
+            }
+            decode_result = decoder.decode(
                 elementary, decoded, lossy_base);
+            if (parallel_decode) {
+                decoded_bed_available = decoded_bed_future.get();
+            }
+        }
         if (recommendation_capacity != nullptr
             && decode_result == ObjectFrameDecodeResult::Decoded) {
             observe_object_recommendation_metadata(
@@ -4456,9 +4578,6 @@ std::uint64_t render_object_stream(
         }
         imax_stream_active =
             imax_stream_active || decoded.imax_enhanced;
-        if (parallel_decode) {
-            decoded_bed_available = decoded_bed_future.get();
-        }
         std::vector<std::vector<std::int32_t>> upmix_dca_bed;
         std::uint32_t upmix_dca_activity_mask = 0U;
         const bool upmix_dca_ready =
@@ -4843,7 +4962,10 @@ int run_pipeline(const Options& requested_options) {
     }
     const DtsTrackRank selected_rank =
         inspect_selected_dts_profile(options);
-    if (selected_rank != DtsTrackRank::DtsX) {
+    const bool core_hra_dtsx =
+        selected_rank != DtsTrackRank::DtsX
+        && inspect_core_hra_dtsx(options);
+    if (selected_rank != DtsTrackRank::DtsX && !core_hra_dtsx) {
         if (!options.upmix
             || selected_rank == DtsTrackRank::None) {
             print_ffmpeg_decode_redirect(options);
@@ -4992,7 +5114,9 @@ int run_pipeline(const Options& requested_options) {
                 sample_rate,
                 bed_path,
                 RenderMode::BedWithoutObjects,
-                &bed_sample_rate);
+                &bed_sample_rate,
+                nullptr,
+                selected_rank == DtsTrackRank::DtsX || core_hra_dtsx);
             if (object_stems_parallel) {
                 object_stems_future.get();
             }
@@ -5024,7 +5148,8 @@ int run_pipeline(const Options& requested_options) {
         output,
         options.render_mode,
         nullptr,
-        &capacity);
+        &capacity,
+        selected_rank == DtsTrackRank::DtsX || core_hra_dtsx);
     std::cerr << "Frames: " << frames << '\n';
     print_layout_recommendations(*layout, capacity);
     return 0;
