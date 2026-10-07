@@ -24,8 +24,6 @@ struct Hp4Record final {
     double a2;
 };
 
-// Exact 70-Hz records from the AVRx0 TI C6000 table at 0x8A5946B8.
-// Both second-order sections in every record are identical.
 constexpr std::array<Lp4Record, 9U> kImaxLp4Records{{
     {32000U, 4.688294939e-05, -1.980539918, 0.9807274342},
     {44100U, 2.475088331e-05, -1.985879064, 0.9859780669},
@@ -38,8 +36,6 @@ constexpr std::array<Lp4Record, 9U> kImaxLp4Records{{
     {176400U, 1.555119411e-06, -1.996469736, 0.9964759350},
 }};
 
-// Exact 70-Hz records selected through the pointer table at 0x8A594450.
-// The stored numerator is (1, -2, 1); the AVR cascades two equal sections.
 constexpr std::array<Hp4Record, 9U> kImaxHp4Records{{
     {32000U, 0.9903396964, -1.980586052, 0.9807726741},
     {44100U, 0.9929808974, -1.985912561, 0.9860110879},

@@ -46,6 +46,7 @@ struct Options {
     bool full_probe = false;
     bool upmix = false;
     bool imax_dsp = false;
+    bool p2_internal = false;
     bool audio_track_explicit = false;
     bool audio_track_optional = false;
 };

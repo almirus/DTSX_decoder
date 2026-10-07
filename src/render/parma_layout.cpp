@@ -8,8 +8,6 @@
 namespace dtsx_decode {
 namespace {
 
-// libdtsx.so: DecSpkrActMaskToParmaChannelMaskTable at 0x13eee0,
-// consumed by sub_6B0B0 at 0x6b0b0.
 constexpr std::array<std::uint32_t, 20>
     kSpeakerActivityToParmaChannelMask = {{
         0x00000001U,
@@ -65,13 +63,11 @@ std::uint32_t parma_channel_mask_from_speaker_activity(
 
 std::uint32_t parma_disable_lfe_channels(
     std::uint32_t channel_mask) noexcept {
-    // libdtsx.so: ParmaDec_DisableLFEChans, 0x724e4.
     return channel_mask & 0xCFFFFFFFU;
 }
 
 std::uint32_t parma_main_channel_count(
     std::uint32_t channel_mask) noexcept {
-    // libdtsx.so: DTS_ParmaDec_GetNumEnabledMainChans, 0x72648.
     std::uint32_t count = 0U;
     const std::uint32_t main_mask =
         parma_disable_lfe_channels(channel_mask);
@@ -141,16 +137,12 @@ std::int32_t parma_main_channel_ordinal(
 
 bool parma_is_horizontal_layout(
     std::uint32_t channel_mask) noexcept {
-    // libdtsx.so: DTS_ParmaDec_IsHorizontalLayout, 0x72690.
     return (channel_mask & 0x0FFFF000U) == 0U;
 }
 
 std::int32_t parma_blind_table_row(
     bool output_is_horizontal,
     std::uint32_t input_main_channel_mask) noexcept {
-    // libdtsx.so: ParmaDec_GetTableRow_Blind, 0x725d8.  The native
-    // row-range table selects 0..8 for horizontal output and 9..17
-    // for output containing height channels.
     for (std::size_t index = 0U;
          index < kBlindInputMainChannelMasks.size();
          ++index) {
@@ -204,7 +196,6 @@ bool derive_parma_layout_controls(
 
 std::uint32_t parma_blind_layer_count(
     const ParmaLayoutControls& controls) noexcept {
-    // libdtsx.so: DTS_ParmaDec_SetBlind, 0x74948..0x74ecc.
     if (controls.blind_table_row < 0) {
         return 0U;
     }

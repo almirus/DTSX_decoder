@@ -15,8 +15,6 @@ bool XllChannelSetDecoder::decode_msb_segment(
     std::uint8_t first_decimator_channel,
     const std::vector<XllJointDecorrelationPair>& joint_pairs,
     XllDecodedChannelSet& decoded) {
-    // libdtsx.so: dtsxXLLDecodeChannelSet, 0xb8fc4, residual/prediction
-    // path after dtsxXLLGetChannelParams.
     decoded = {};
     last_error_.clear();
     if (sample_count == 0U || prediction.empty()
@@ -131,9 +129,6 @@ bool XllChannelSetDecoder::combine_lsb_segment(
     const XllChannelSetBand& band,
     const std::vector<std::uint8_t>& msb_shifts,
     XllDecodedChannelSet& decoded) {
-    // libdtsx.so: dtsxXLLMSBLSB, 0xb9784,
-    // dtsxXLLUnpackLSB, 0xba5a8, and
-    // dtsxXLLCombineMSBLSBParts, 0xb8e60.
     const std::size_t channel_count = decoded.channels.size();
     last_error_.clear();
     if (channel_count == 0U

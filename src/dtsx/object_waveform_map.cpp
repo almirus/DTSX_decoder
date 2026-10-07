@@ -8,7 +8,6 @@ bool map_objects_to_decoded_waveforms(
     const std::vector<ObjectWaveformRequest>& objects,
     const std::vector<DecodedWaveformSlot>& decoded,
     std::vector<ObjectWaveformMapping>& mappings) {
-    // libdtsx.so: dtsPlayerObjectRenderer_MapObjectsToDecoders, 0x5eb04.
     mappings.clear();
     mappings.reserve(objects.size());
     for (const ObjectWaveformRequest& object : objects) {
@@ -36,10 +35,6 @@ bool map_objects_to_decoded_waveforms(
         if (!found
             && object.waveform_id
                 > decoded.back().waveform_id) {
-            // libdtsx(v2).so.c:
-            // dtsPlayerObjectRenderer_MapObjectsToDecoders. Decoder IDs
-            // delimit ranges: an object above the final decoder ID is
-            // assigned to that final decoder.
             decoder_index = decoded.size() - 1U;
             found = true;
         }
@@ -59,9 +54,6 @@ bool object_waveform_channel_indices(
     std::vector<std::uint32_t>& channel_indices,
     const std::vector<std::uint32_t>*
         waveform_base_by_id) noexcept {
-    // libdtsx.so: dtsPlayerObjectRenderer_SetupObjectRenderer,
-    // 0x5f3a0, waveform sample-array lookup using object bytes
-    // 104, 105, and 106+n.
     channel_indices.clear();
     if (!object.metadata_present || !object.waveform_id_available
         || object.waveform_channel_offsets.size()

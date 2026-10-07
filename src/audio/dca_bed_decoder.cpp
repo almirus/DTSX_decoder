@@ -1,5 +1,9 @@
 #include "audio/dca_bed_decoder.hpp"
 
+#include "bitstream/dtsx_word_buffer.hpp"
+#include "dtsx/exss_asset.hpp"
+#include "dtsx/exss_header.hpp"
+
 extern "C" {
 #include "dca_context.h"
 }
@@ -109,6 +113,52 @@ bool filter_context(
     }
     decoded.sample_rate =
         static_cast<std::uint32_t>(sample_rate);
+    decoded.samples_per_channel =
+        static_cast<std::uint32_t>(sample_count);
+    return true;
+}
+
+bool filter_object_context(
+    dcadec_context* context,
+    DcaDecodedObjectAsset& decoded,
+    std::string& error) {
+    int** samples = nullptr;
+    int sample_count = 0;
+    int channel_mask = 0;
+    int sample_rate = 0;
+    int bits_per_sample = 0;
+    int profile = 0;
+    const int filter_result = dcadec_context_filter(
+        context,
+        &samples,
+        &sample_count,
+        &channel_mask,
+        &sample_rate,
+        &bits_per_sample,
+        &profile);
+    if (filter_result < 0 || samples == nullptr
+        || sample_count <= 0 || sample_rate <= 0) {
+        error = dcadec_strerror(filter_result);
+        return false;
+    }
+    const std::uint32_t mask =
+        static_cast<std::uint32_t>(channel_mask);
+    std::uint32_t channel_count = 0U;
+    for (std::uint32_t bit = 0U; bit < 32U; ++bit) {
+        channel_count += (mask >> bit) & 1U;
+    }
+    if (channel_count == 0U) {
+        error = "decoded object asset has no channels";
+        return false;
+    }
+    decoded.channels.resize(channel_count);
+    for (std::uint32_t channel = 0U;
+         channel < channel_count;
+         ++channel) {
+        decoded.channels[channel].assign(
+            samples[channel], samples[channel] + sample_count);
+    }
+    decoded.sample_rate = static_cast<std::uint32_t>(sample_rate);
     decoded.samples_per_channel =
         static_cast<std::uint32_t>(sample_count);
     return true;
@@ -248,7 +298,8 @@ void DcaBedDecoder::remember_core(
 bool DcaBedDecoder::decode_extension(
     const dtsx::ElementaryFrame& frame,
     DcaDecodedBed& decoded,
-    bool require_dtsx_71) {
+    bool require_dtsx_71,
+    std::vector<DcaDecodedObjectAsset>* object_assets) {
     decoded = {};
     extension_stream_info_ = {};
     last_error_.clear();
@@ -267,12 +318,12 @@ bool DcaBedDecoder::decode_extension(
         packet.end(), frame.bytes.begin(), frame.bytes.end());
     const std::size_t packet_size = packet.size();
     packet.resize(packet_size + DCADEC_BUFFER_PADDING, 0U);
-    pending_core_.clear();
 
     const int parse_result = dcadec_context_parse(
         context_.get(), packet.data(), packet_size);
     if (parse_result < 0) {
         last_error_ = dcadec_strerror(parse_result);
+        pending_core_.clear();
         return false;
     }
 
@@ -301,8 +352,72 @@ bool DcaBedDecoder::decode_extension(
     }
     dcadec_context_free_exss_info(stream_info);
 
-    return filter_context(
+    const bool bed_decoded = filter_context(
         context_.get(), decoded, require_dtsx_71, last_error_);
+
+    if (object_assets != nullptr) {
+        object_assets->clear();
+        const bool swap =
+            frame.packing == dtsx::StreamPacking::ExtensionBigEndian;
+        dtsx::bitstream::WordBuffer words(frame.bytes, swap);
+        dtsx::bitstream::Cursor header_source = words.cursor();
+        dtsx::ExssHeader header;
+        if (dtsx::unpack_exss_header(header_source, header)) {
+            if (object_asset_contexts_.size() < header.asset_count) {
+                object_asset_contexts_.resize(header.asset_count);
+            }
+            for (std::uint32_t ordinal = 0U;
+                 ordinal < header.asset_count
+                     && ordinal < header.asset_header_bit_offsets.size();
+                 ++ordinal) {
+                dtsx::bitstream::Cursor asset_source = words.cursor();
+                asset_source.fast_forward(static_cast<std::int32_t>(
+                    header.asset_header_bit_offsets[ordinal]));
+                dtsx::ExssAssetSummary asset;
+                if (!dtsx::unpack_exss_asset_summary(
+                        asset_source, header, asset, ordinal)
+                    || asset.object_audio_type != 1U
+                    || (asset.coding_components & (1U << 6U)) == 0U
+                    || (asset.coding_components & (1U << 9U)) != 0U) {
+                    continue;
+                }
+                auto& asset_context = object_asset_contexts_[ordinal];
+                if (!asset_context) {
+                    asset_context.reset(dcadec_context_create(
+                        DCADEC_FLAG_NATIVE_LAYOUT));
+                    if (!asset_context
+                        || dcadec_context_set_exss_asset(
+                               asset_context.get(), ordinal) < 0) {
+                        last_error_ =
+                            "XXCH object asset decoder allocation failed";
+                        pending_core_.clear();
+                        return false;
+                    }
+                }
+                const int object_parse = dcadec_context_parse(
+                    asset_context.get(), packet.data(), packet_size);
+                if (object_parse < 0) {
+                    last_error_ = dcadec_strerror(object_parse);
+                    pending_core_.clear();
+                    return false;
+                }
+                DcaDecodedObjectAsset decoded_asset;
+                decoded_asset.asset_ordinal =
+                    static_cast<std::uint8_t>(ordinal);
+                decoded_asset.asset_index = asset.asset_index;
+                decoded_asset.coding_components =
+                    asset.coding_components;
+                if (!filter_object_context(
+                        asset_context.get(), decoded_asset, last_error_)) {
+                    pending_core_.clear();
+                    return false;
+                }
+                object_assets->push_back(std::move(decoded_asset));
+            }
+        }
+    }
+    pending_core_.clear();
+    return bed_decoded;
 }
 
 } // namespace dtsx_decode

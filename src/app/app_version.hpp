@@ -4,12 +4,12 @@
 
 namespace dtsx_decode {
 
-inline constexpr const char* kVersion = "0.2.4 beta (unmapped 🗺️)";
+inline constexpr const char* kVersion = "0.2.8 beta";
 inline constexpr const char* kAuthor = "@almirus";
 
 inline std::string make_decode_comment() {
     return std::string("Decoded by dtsx-decode ")
-        + kVersion + ", @" + kAuthor;
+        + kVersion + ", " + kAuthor;
 }
 
 } // namespace dtsx_decode

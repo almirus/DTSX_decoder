@@ -26,7 +26,6 @@ std::vector<WaveformMetadataUpdate> unpack_waveform_metadata_updates(
     bitstream::Cursor& source,
     std::uint8_t waveform_count,
     std::uint8_t update_value_count) {
-    // libdtsx.so: dtsParseExSSChunks, 0xa1440..0xa1598.
     std::vector<WaveformMetadataUpdate> result;
     result.reserve(waveform_count);
     for (std::uint32_t waveform = 0; waveform < waveform_count; ++waveform) {
@@ -52,7 +51,6 @@ std::vector<WaveformMetadataUpdate> unpack_waveform_metadata_updates(
 ModeThreeMetadata unpack_mode_three_metadata(bitstream::Cursor& source,
                                              std::uint8_t waveform_count,
                                              std::uint8_t update_value_count) {
-    // libdtsx.so: dtsParseExSSChunks, 0xa12c0..0xa2168.
     ModeThreeMetadata result;
     result.per_waveform_gain_present = source.extract_unsigned(1U) != 0U;
     if (update_value_count == 0U) {

@@ -4,6 +4,7 @@
 #include "dtsx/crc16.hpp"
 #include "dtsx/exss_asset.hpp"
 #include "dtsx/exss_header.hpp"
+#include "dtsx/frame_sync.hpp"
 #include "dtsx/metadata_chunk.hpp"
 #include "dtsx/object_waveform_map.hpp"
 #include "dtsx/preliminary_metadata.hpp"
@@ -32,11 +33,6 @@ std::vector<std::uint8_t> resolve_metadata_element_sizes(
     dtsx::bitstream::Cursor metadata_source,
     const std::vector<std::uint8_t>& descriptor_sizes,
     const std::vector<std::uint8_t>& associated_chunk_types) {
-    // visio-libdtsx.so.c PrelimParseChunks: sub_8AC78 advances the metadata
-    // cursor before sub_89E90 parses the associated audio list.  A CRC-valid
-    // metadata boundary is authoritative only when that advanced cursor also
-    // yields the declared type-65/type-68 XLL chunks.  This disambiguates
-    // adjacent CRC-valid boundaries without scanning outside the native list.
     if (descriptor_sizes.empty()
         || associated_chunk_types.empty()) {
         return descriptor_sizes;
@@ -116,10 +112,6 @@ void merge_sparse_gain_set(
     bool& state_present,
     std::uint32_t& state_mask,
     std::vector<dtsx::SixBitUpdate>& state_values) {
-    // libdtsx.so keeps the previous destination coefficients when a mode 1/2
-    // frame omits a set or omits an individual bit from that set
-    // (dtsParseExSSChunks, 0xa1440..0xa1598).  The bitstream carries only
-    // sparse replacements, not a complete coefficient vector.
     if (!update_present) {
         return;
     }
@@ -248,13 +240,39 @@ void merge_object_update(
     state.body_parsed = update.body_parsed;
 }
 
+bool is_core_stream_packing(dtsx::StreamPacking packing) noexcept {
+    return packing == dtsx::StreamPacking::Core16BitBigEndian
+        || packing == dtsx::StreamPacking::Core16BitLittleEndian
+        || packing == dtsx::StreamPacking::Core14BitBigEndian
+        || packing == dtsx::StreamPacking::Core14BitLittleEndian;
+}
+
+bool core_swap_byte_pairs(dtsx::StreamPacking packing) noexcept {
+    return packing == dtsx::StreamPacking::Core16BitLittleEndian
+        || packing == dtsx::StreamPacking::Core14BitLittleEndian;
+}
+
 } // namespace
+
+void ObjectFrameDecoder::remember_core_metadata(
+    const dtsx::ElementaryFrame& frame) {
+    pending_core_bytes_.clear();
+    pending_core_valid_ = false;
+    if (!is_core_stream_packing(frame.packing) || frame.bytes.empty()) {
+        return;
+    }
+    pending_core_bytes_ = frame.bytes;
+    pending_core_packing_ = frame.packing;
+    pending_core_valid_ = true;
+}
 
 ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     const dtsx::ElementaryFrame& elementary,
     DecodedObjectAudioFrame& decoded,
     const std::vector<dtsx::XllLossyBaseChannel>&
-        lossy_base_channels) {
+        lossy_base_channels,
+    const std::vector<DcaDecodedObjectAsset>&
+        lossy_object_assets) {
     decoded = {};
     last_error_.clear();
     if (elementary.packing != dtsx::StreamPacking::ExtensionBigEndian
@@ -292,6 +310,44 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     std::vector<AssociatedWaveformRange>
         decoded_uhd_waveform_ranges;
     std::vector<dtsx::MetadataChunkLocation> chunks;
+
+    // DTS_ObjectDecoder has two independent compressed-audio backends:
+    // 0x400 (XLL) and 0x800 (lossy XXCH). DTSHD_UHDAssetDecoder iterates the
+    // same persistent object-decoder array for both. Register the separately
+    // decoded XXCH assets before parsing type-241 metadata so waveform IDs
+    // resolve identically to XLL object assets. Legacy LBR is not an
+    // ObjectDecoder waveform backend. Channel-based HRA beds
+    // (object_audio_type == 0) stay in DcaBedDecoder and must not be copied
+    // into waveform_channels: that would reverse-render the 8ch bed and
+    // break the dtshdHRA-DTSX-001 PCM hash.
+    for (const DcaDecodedObjectAsset& asset : lossy_object_assets) {
+        if (asset.channels.empty()) {
+            continue;
+        }
+        if (decoded.sample_rate != 0U
+            && decoded.sample_rate != asset.sample_rate) {
+            last_error_ = "lossy object asset sample rate";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        if (decoded.samples_per_channel != 0U
+            && decoded.samples_per_channel
+                != asset.samples_per_channel) {
+            last_error_ = "lossy object asset frame duration";
+            return ObjectFrameDecodeResult::Malformed;
+        }
+        decoded.sample_rate = asset.sample_rate;
+        decoded.samples_per_channel = asset.samples_per_channel;
+        decoded_asset_bases.emplace_back(
+            asset.asset_index,
+            static_cast<std::uint32_t>(
+                decoded.waveform_channels.size()));
+        for (const auto& channel : asset.channels) {
+            decoded.waveform_channels.push_back(channel);
+            decoded.waveform_speaker_masks.push_back(0U);
+            decoded.waveform_source_activity_masks.push_back(0U);
+            decoded.waveform_is_supplemental.push_back(false);
+        }
+    }
 
     for (std::uint32_t asset_index = 0;
          asset_index < exss.asset_count
@@ -378,13 +434,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 && assembled_common.frame_size <= xll_pbr.size()
                 && asset.xll_metadata_offset
                     < assembled_common.frame_size) {
-                // libdtsx(v2).so.c PrelimParseChunks, 0x94460:
-                // when PBR state is synchronized, the decoder clones the
-                // assembled XLL cursor and advances it by the descriptor's
-                // stored metadata offset (asset state + 18212).  The native
-                // path does not scan for 0x02000850: that value is also a
-                // valid DTS:X/XLL-X extension prefix and can occur after the
-                // actual metadata start.
                 metadata_component_offset =
                     asset.xll_metadata_offset;
                 metadata_in_assembled_xll = true;
@@ -465,16 +514,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 if (asset.xll_associated_chunk_types[
                         associated_index]
                     == 69U) {
-                    // libdtsx.so: sub_C48C0 ->
-                    // dtsGetNumChSetsAudioChunk(69) ->
-                    // dtsx_decodeTryXLLChSetHeader.  The native chunk list
-                    // stores a cursor at the start of each associated audio
-                    // chunk and advances to the next chunk by its 15-bit
-                    // descriptor length. Native dtsx_decodeTryXLLChSetHeader
-                    // can consume the complete associated cursor; our XLL
-                    // channel-set decoder starts at the inner CRC-protected
-                    // header, so locate that header only inside this native
-                    // chunk boundary (never by an unbounded frame scan).
                     const std::size_t metadata_buffer_size =
                         metadata_in_assembled_xll
                         ? xll_pbr.size()
@@ -531,14 +570,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                             }
                         }
                     }
-                    // sub_89E90 uses the 15-bit associated length only to
-                    // advance its list cursor to the next audio chunk.  The
-                    // cursor saved for dtsx_decodeTryXLLChSetHeader retains
-                    // the remainder of the complete XLL component: its
-                    // navigation table may therefore reference audio bytes
-                    // beyond that associated length.  Preserve those native
-                    // cursor bounds after locating the header within the
-                    // current chunk.
                     if (channel_set_valid) {
                         dtsx::bitstream::Cursor
                             supplemental_source =
@@ -697,11 +728,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                     envelope,
                     static_cast<std::uint8_t>(
                         exss.asset_count))) {
-                // PrelimParseChunks calls sub_8AC78 first and passes the
-                // advanced cursor to sub_89E90.  The CRC-recovered envelope
-                // size is therefore the authoritative start of associated
-                // audio; the descriptor's original final element size may
-                // have been recovered by unpack_metadata_chunk_payload.
                 associated_audio_offset =
                     metadata_component_offset
                     + envelope.crc_region_size;
@@ -889,13 +915,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
             }
         }
 
-        // PrelimParseChunks/sub_89E90 stores an exact cursor and length for
-        // every associated audio chunk in the assembled XLL frame.  Native
-        // dtsUHDChunks_Parse dispatches only types 65 and 68 and feeds those
-        // bounded cursors to separate persistent object decoders (component
-        // modes 64 and 512).  Searching the current transport fragment from
-        // xll_metadata_offset is incorrect for PBR: it can select the main
-        // bed XLL sync and drops object waveforms split across fragments.
         if (asset.xll_object_metadata_present
             && !asset.xll_metadata_chunk_sizes.empty()
             && !asset.xll_associated_chunk_types.empty()
@@ -1227,10 +1246,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
         decoded_uhd_waveform_bases.begin(),
         decoded_uhd_waveform_bases.end());
     if (!decoded_waveform_bases.empty()) {
-        // libdtsx(v2).so.c:
-        // dtsPlayerObjectRenderer_MapObjectsToDecoders treats decoder IDs as
-        // ordered lower bounds. Keep UHD-associated decoders after ordinary
-        // asset decoders with the same ID so the more specific decoder wins.
         std::stable_sort(
             decoded_waveform_bases.begin(),
             decoded_waveform_bases.end(),
@@ -1268,6 +1283,44 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     std::size_t current_object_count = 0U;
     bool current_object_ids_complete = false;
     std::vector<std::uint32_t> current_object_ids;
+    std::shared_ptr<const dtsx::bitstream::WordBuffer> core_words;
+    if (pending_core_valid_) {
+        core_words = std::make_shared<dtsx::bitstream::WordBuffer>(
+            pending_core_bytes_,
+            core_swap_byte_pairs(pending_core_packing_));
+        std::vector<dtsx::MetadataChunkLocation> core_chunks =
+            dtsx::scan_metadata_chunks(
+                core_words->cursor(),
+                static_cast<std::uint32_t>(pending_core_bytes_.size()),
+                static_cast<std::uint8_t>(exss.asset_count),
+                1U);
+        for (dtsx::MetadataChunkLocation& chunk : core_chunks) {
+            chunk.source_words = core_words;
+            ++decoded.raw_metadata_envelopes;
+            ++decoded.core_metadata_envelopes;
+            decoded.raw_metadata_elements +=
+                static_cast<std::uint32_t>(chunk.envelope.elements.size());
+            decoded.core_metadata_elements +=
+                static_cast<std::uint32_t>(chunk.envelope.elements.size());
+            for (const dtsx::MetadataElementHeader& element :
+                 chunk.envelope.elements) {
+                decoded.core_metadata_chunk_ids.push_back(
+                    element.chunk_id);
+            }
+            if (!chunk.envelope.crc_valid) {
+                ++decoded.raw_metadata_crc_failures;
+                ++decoded.core_metadata_crc_failures;
+                decoded.raw_metadata_crc_failure_bytes +=
+                    chunk.envelope.crc_region_size;
+            }
+        }
+        chunks.insert(
+            chunks.end(),
+            std::make_move_iterator(core_chunks.begin()),
+            std::make_move_iterator(core_chunks.end()));
+        pending_core_valid_ = false;
+        pending_core_bytes_.clear();
+    }
     std::vector<dtsx::MetadataChunkLocation> scanned_chunks =
         dtsx::scan_metadata_chunks(
             words.cursor(),
@@ -1293,11 +1346,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                 chunk.byte_offset
                 + chunk.element_prefix_bytes
                 + element.byte_offset + 2U;
-            // libdtsx.so dtsParseExSSChunks clones the containing ExSS
-            // bitstream cursor kept by sub_C5B9C.  It does not restrict the
-            // detailed type-241 parser to the preliminary element byte
-            // count; object bodies can continue through following chunk
-            // storage before the native end-position checks.
             dtsx::bitstream::Cursor metadata_source =
                 chunk.source_words != nullptr
                 ? chunk.source_words->cursor()
@@ -1346,9 +1394,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
                         object.waveform_id);
                 if (!waveform_decoder_available[object_index]
                     && !object.metadata_present) {
-                    // libdtsx.so retains object+0x800 when a subsequent
-                    // metadata block omits the object body; the parser still
-                    // consumes its alternative-rendering presence bit.
                     std::size_t previous_index = object_state_.size();
                     if (object.object_id_available) {
                         for (std::size_t candidate = 0U;
@@ -1524,11 +1569,6 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     }
     for (const AssociatedWaveformRange& range :
          decoded_uhd_waveform_ranges) {
-        // libdtsx.so dtsUHDChunks_Parse creates a decoder for every type-68
-        // associated XLL chunk. dtsPlayerObjectRenderer_MapObjectsToDecoders
-        // consumes the decoder selected by each type-241 waveform ID. The
-        // remaining four-channel decoder accompanying private type-247
-        // renderer metadata is the already-rendered upper layer.
         if (!range.renderer_auxiliary_metadata_present
             || referenced_waveform_decoders[
                    range.association_index]
@@ -1566,6 +1606,7 @@ ObjectFrameDecodeResult ObjectFrameDecoder::decode(
     }
     return decoded.waveform_channels.empty()
             && decoded.bed_channels.empty()
+            && decoded.objects.empty()
         ? ObjectFrameDecodeResult::Ignored
         : ObjectFrameDecodeResult::Decoded;
 }

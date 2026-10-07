@@ -1,6 +1,8 @@
 #pragma once
 
+#include "audio/dca_bed_decoder.hpp"
 #include "dtsx/frame_assembler.hpp"
+#include "dtsx/frame_sync.hpp"
 #include "dtsx/object_metadata_block.hpp"
 #include "dtsx/preliminary_metadata.hpp"
 #include "dtsx/xll_frame_decoder.hpp"
@@ -61,6 +63,13 @@ struct DecodedObjectAudioFrame final {
     // renderer can select SetGuided rather than reconstructing coefficients.
     std::optional<dtsx::CombinedMixMetadata> parma_guided_metadata;
     std::vector<dtsx::ObjectMetadataBlock> objects;
+    // Core-embedded HRA DTS:X envelope (0x3A429B0A) consumed with the
+    // matching ExSS frame.  Independent of XLL raw_metadata_* counters so
+    // probe/dump can report that the envelope was parsed, not only counted.
+    std::uint32_t core_metadata_envelopes = 0;
+    std::uint32_t core_metadata_elements = 0;
+    std::uint32_t core_metadata_crc_failures = 0;
+    std::vector<std::uint8_t> core_metadata_chunk_ids;
 };
 
 enum class ObjectFrameDecodeResult {
@@ -71,11 +80,19 @@ enum class ObjectFrameDecodeResult {
 
 class ObjectFrameDecoder final {
 public:
+    // Native DecStream_Core / CoreSubStream keeps the core substream until
+    // the matching ExSS asset publishes the frame.  HRA DTS:X stores the
+    // 0x3A429B0A metadata envelope in that core tail; hold it here and parse
+    // it when decode() sees the extension frame.
+    void remember_core_metadata(const dtsx::ElementaryFrame& frame);
+
     [[nodiscard]] ObjectFrameDecodeResult decode(
         const dtsx::ElementaryFrame& elementary,
         DecodedObjectAudioFrame& decoded,
         const std::vector<dtsx::XllLossyBaseChannel>&
-            lossy_base_channels = {});
+            lossy_base_channels = {},
+        const std::vector<DcaDecodedObjectAsset>&
+            lossy_object_assets = {});
     [[nodiscard]] const std::string& last_error() const noexcept {
         return last_error_;
     }
@@ -106,6 +123,10 @@ private:
     bool alternative_presentation_gain_present_ = false;
     std::uint8_t alternative_presentation_gain_code_ = 61;
     std::uint8_t presentation_gain_code_ = 61;
+    std::vector<std::uint8_t> pending_core_bytes_;
+    dtsx::StreamPacking pending_core_packing_ =
+        dtsx::StreamPacking::Core16BitBigEndian;
+    bool pending_core_valid_ = false;
     std::string last_error_;
 };
 

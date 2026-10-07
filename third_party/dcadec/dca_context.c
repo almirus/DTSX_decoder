@@ -43,6 +43,7 @@ struct dcadec_context {
 
     int     flags;  ///< Context flags passed to dcadec_context_create()
     int     packet; ///< Packet flags set by dcadec_context_parse()
+    unsigned int selected_exss_asset; ///< Persistent EXSS asset ordinal
 
     struct core_decoder *core;  ///< Core decoder context
     struct exss_parser  *exss;  ///< EXSS parser context
@@ -987,7 +988,9 @@ DCADEC_API int dcadec_context_parse(struct dcadec_context *dca, uint8_t *data, s
             status = DCADEC_WEXSSFAILED;
         } else {
             dca->packet |= PACKET_EXSS;
-            asset = &dca->exss->assets[0];
+            if (dca->selected_exss_asset >= (unsigned int)dca->exss->nassets)
+                return -DCADEC_EINVAL;
+            asset = &dca->exss->assets[dca->selected_exss_asset];
         }
     }
 
@@ -1073,7 +1076,7 @@ DCADEC_API struct dcadec_exss_info *dcadec_context_get_exss_info(struct dcadec_c
 {
     if (dca) {
         if (dca->packet & PACKET_EXSS)
-            return exss_get_info(dca->exss);
+            return exss_get_info(dca->exss, dca->selected_exss_asset);
         if (dca->packet & PACKET_CORE)
             return core_get_info_exss(dca->core);
     }
@@ -1083,6 +1086,17 @@ DCADEC_API struct dcadec_exss_info *dcadec_context_get_exss_info(struct dcadec_c
 DCADEC_API void dcadec_context_free_exss_info(struct dcadec_exss_info *info)
 {
     ta_free(info);
+}
+
+DCADEC_API int dcadec_context_set_exss_asset(struct dcadec_context *dca,
+                                             unsigned int asset_ordinal)
+{
+    if (!dca)
+        return -DCADEC_EINVAL;
+    if (dca->packet && !(dca->packet & PACKET_FILTERED))
+        return -DCADEC_EINVAL;
+    dca->selected_exss_asset = asset_ordinal;
+    return 0;
 }
 
 DCADEC_API int dcadec_context_filter(struct dcadec_context *dca, int ***samples,

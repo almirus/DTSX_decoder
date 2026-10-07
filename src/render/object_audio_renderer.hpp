@@ -30,6 +30,7 @@ private:
         std::tuple<std::uint32_t,
                    std::uint32_t,
                    std::uint32_t,
+                   std::uint32_t,
                    std::uint32_t>;
 
     ChannelLayout layout_;
@@ -39,12 +40,15 @@ private:
     bool reported_reverse_metadata_ = false;
     std::int32_t reported_maximum_gain_ = 0;
     std::map<GainKey, NativeGainRamp> gain_state_;
-    // visio-libdtsx.so.c: player renderer modes 0, 1 and 5 are three
-    // independent native renderer instances.
+    // Native dts_3d_object_renderer_t_set_point_source_count unregisters and
+    // re-registers an object when its per-waveform point-source cardinality
+    // changes. Keep the last raw counts so a metadata change resets only that
+    // object's renderer ramps.
+    std::map<std::uint32_t, std::vector<std::uint8_t>> point_source_counts_;
     std::array<std::uint32_t, 3> rendered_block_counts_{};
     std::map<GainKey, NativeGainRamp> reverse_gain_state_;
-    // visio-libdtsx.so.c: legacy reverse renderer modes 2, 3 and 4 own
-    // independent smoothing/snap state.
+    std::map<std::uint32_t, std::vector<std::uint8_t>>
+        reverse_point_source_counts_;
     std::array<std::uint32_t, 3> reverse_block_counts_{};
 };
 

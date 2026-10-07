@@ -54,7 +54,6 @@ std::uint32_t extract_14bit_header_bits(
 
 std::uint32_t unpack_core_frame_size(
     const std::array<std::uint8_t, 8>& header) noexcept {
-    // libdtsx.so: DTSXDecParser_SAPI_CaptureFrame, 0x448bc..0x4490c.
     const bool big_endian = header[0] == 0x7FU;
     const std::uint32_t byte_4_or_5 = big_endian ? header[5] : header[4];
     const std::uint32_t byte_5_or_4 = big_endian ? header[4] : header[5];
@@ -68,10 +67,6 @@ std::uint32_t unpack_core_frame_size(
 std::uint32_t unpack_core_14bit_frame_size(
     const std::array<std::uint8_t, 10>& header,
     bool little_endian) noexcept {
-    // libdtsx.so: dtsExtractBits, 0x2eb10, consumes the low fourteen
-    // bits of each endian-corrected 16-bit word. The native core-header
-    // validator skips the 32-bit logical sync, reads six termination bits,
-    // skips eight bits, then reads the fourteen-bit logical frame size.
     if (extract_14bit_header_bits(
             header, little_endian, 32U, 6U)
         != 63U) {
@@ -92,7 +87,6 @@ std::uint32_t unpack_core_14bit_frame_size(
 
 ExtensionFrameSizes unpack_extension_frame_sizes(
     const std::array<std::uint8_t, 12>& header) noexcept {
-    // libdtsx.so: DTSXDecParser_SAPI_CaptureFrame, 0x43ddc..0x43e80.
     const bool little_endian = header[0] == 0x64U;
     const std::uint32_t byte_10_or_11 =
         little_endian ? header[10] : header[11];
@@ -132,7 +126,6 @@ ExtensionFrameSizes unpack_extension_frame_sizes(
 
 bool validate_core_frame_header(bitstream::Cursor& source,
                                 std::uint32_t& frame_size) noexcept {
-    // libdtsx.so: DTSFrameScanner_ValidateCoreFrameHeader, 0x2ef74.
     const bitstream::Cursor saved = source;
     source.fast_forward(32);
     if (source.extract_unsigned(6U) != 63U) {

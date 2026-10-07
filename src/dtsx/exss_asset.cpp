@@ -10,7 +10,6 @@ bool unpack_exss_asset_summary(bitstream::Cursor& source,
                                const ExssHeader& exss,
                                ExssAssetSummary& asset,
                                std::uint32_t asset_ordinal) noexcept {
-    // libdtsx.so: dtsParseAsset, 0x2f738..0x2fa68 and 0x302e0..0x3039c.
     const bitstream::Cursor asset_start = source;
     asset = {};
     asset.header_size = source.extract_unsigned(9U) + 1U;
@@ -229,9 +228,44 @@ bool unpack_exss_asset_summary(bitstream::Cursor& source,
             source.fast_forward(16);
         }
     } else if (asset.coding_mode == 1U) {
-        source.fast_forward(static_cast<std::int32_t>(exss.size_field_bits));
+        // ETSI TS 102 114, Table 7-14 / native dtsParseAsset: coding mode 1
+        // is an XLL-only asset and carries the same XLL size and sync fields
+        // as component bit 9 in coding mode 0.
+        asset.coding_components = static_cast<std::uint16_t>(1U << 9U);
+        asset.component_byte_offsets[9U] = 0U;
+        asset.component_size_bytes[9U] =
+            source.extract_unsigned(exss.size_field_bits) + 1U;
+        asset.xll_sync_present = source.extract_unsigned(1U) != 0U;
+        if (asset.xll_sync_present) {
+            asset.xll_smoothing_buffer_kbytes =
+                static_cast<std::uint8_t>(
+                    16U * source.extract_unsigned(4U));
+            asset.xll_initial_delay_bits =
+                static_cast<std::uint8_t>(
+                    source.extract_unsigned(5U) + 1U);
+            asset.xll_initial_delay_frames = source.extract_unsigned(
+                asset.xll_initial_delay_bits);
+            asset.xll_sync_offset =
+                source.extract_unsigned(exss.size_field_bits);
+        }
+    } else if (asset.coding_mode == 2U) {
+        // Native mode 2 is DTS LBR, not auxiliary data. The LBR component
+        // has a fixed 14-bit size followed by sync-present and sync-distance.
+        asset.coding_components = static_cast<std::uint16_t>(1U << 8U);
+        asset.component_byte_offsets[8U] = 0U;
+        asset.component_size_bytes[8U] =
+            source.extract_unsigned(14U) + 1U;
+        if (source.extract_unsigned(1U) != 0U) {
+            source.fast_forward(2);
+        }
     } else {
+        // Auxiliary coding mode: size, codec identifier, sync flag and
+        // optional three-bit sync distance.
         source.fast_forward(14);
+        source.fast_forward(8);
+        if (source.extract_unsigned(1U) != 0U) {
+            source.fast_forward(3);
+        }
     }
 
     const auto bits_consumed = [&]() noexcept {
@@ -340,11 +374,6 @@ bool unpack_exss_asset_summary(bitstream::Cursor& source,
     const std::uint32_t parsed_bits =
         asset_start.remaining_bits() - source.remaining_bits();
     asset.descriptor_bits_used = parsed_bits;
-    // libdtsx.so dtsxSubstreamParseAsset intentionally continues reading
-    // private XLL navigation arrays beyond the nominal asset-descriptor
-    // length, then restores the saved position and advances by header_size.
-    // Multi-element DTS:X/Pro descriptors can exceed the public header by
-    // considerably more than one 32-bit lookahead word.
     if (!source.valid()) {
         source = asset_start;
         source.fast_forward(

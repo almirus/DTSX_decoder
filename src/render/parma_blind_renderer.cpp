@@ -249,8 +249,8 @@ bool ParmaBlindRenderer::render(
     const ChannelLayout& output_layout,
     std::uint32_t sample_rate,
     std::vector<std::vector<std::int32_t>>& output) noexcept {
-    // Native SetBlind horizontal elevation paths.  Every supported route
-    // ends in the same 0x360DF height layer; rows 14/15 first reconstruct
+    // Every supported horizontal elevation route ends in the same height
+    // layer; rows 14/15 first reconstruct
     // their 7.1 intermediate layer.
     ParmaLayoutControls controls;
     std::uint32_t output_physical_mask = 0U;

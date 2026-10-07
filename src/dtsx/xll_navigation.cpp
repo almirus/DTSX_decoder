@@ -36,7 +36,6 @@ bool unpack_xll_navigation_table(
     std::uint32_t segment_count,
     const std::vector<std::uint8_t>& channel_set_band_counts,
     XllNavigationTable& table) noexcept {
-    // libdtsx.so: dtsx_initializeNavITable, 0xb4384.
     table = {};
     if (segment_size_bits == 0U || segment_size_bits > 32U
         || segment_count == 0U || channel_set_band_counts.empty()

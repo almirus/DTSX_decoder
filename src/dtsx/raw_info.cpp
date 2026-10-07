@@ -3,7 +3,6 @@
 namespace dtsx {
 
 RawInfoMasks set_raw_info(const RawInfoFields& fields) noexcept {
-    // libdtsx.so: DTSFrameScanner_SetRawInfo, 0x2e3e8.
     const std::uint32_t second =
         ((static_cast<std::uint32_t>(fields.value8) << 5U) & 0x20U)
         | ((static_cast<std::uint32_t>(fields.value4) << 6U) & 0x40U)

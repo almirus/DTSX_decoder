@@ -7,7 +7,6 @@ namespace dtsx::bitstream {
 
 std::optional<BitstreamInit> initialize_bitstream(
     const std::vector<std::uint8_t>& bytes) noexcept {
-    // libdtsx.so: DTSFrameScanner_InitBitstream, 0x2ecb8.
     if (bytes.size() < 4U) {
         return std::nullopt;
     }
@@ -68,7 +67,7 @@ WordBuffer::WordBuffer(
 Cursor WordBuffer::cursor() const noexcept {
     // dtsxBitstreamExtractBitsUnsigned consumes the most-significant bit of
     // each 32-bit word first. The pair swap follows the big/little sync-word
-    // pairs accepted at DTSXDecParser_SAPI_CaptureFrame, 0x44240..0x44610.
+    // pairs accepted by the frame-capture parser.
     return Cursor(words_.data(), bit_count_);
 }
 

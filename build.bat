@@ -72,6 +72,10 @@ cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 ^
   src\dtsx\exss_header.cpp src\dtsx\exss_asset.cpp ^
   src\dtsx\frame_assembler.cpp src\dtsx\frame_header.cpp ^
   src\dtsx\frame_sync.cpp src\dtsx\uhd_frame.cpp ^
+  src\dtsx\ace_bit_reader.cpp src\dtsx\ace_frame.cpp ^
+  src\dtsx\ace_lfe.cpp src\dtsx\ace_coarse_residual.cpp src\dtsx\ace_scalar_dequant.cpp src\dtsx\ace_final_refinement.cpp src\dtsx\ace_stream.cpp src\dtsx\ace_vq.cpp ^
+  src\dtsx\ace_band_scheduler.cpp src\dtsx\ace_spectral_payload.cpp ^
+  src\dtsx\ace_mdct.cpp src\dtsx\ace_mdct_f32.cpp src\dtsx\ace_deemphasis.cpp src\dtsx\ace_lts.cpp ^
   src\dtsx\lbr_chunk.cpp src\dtsx\raw_info.cpp ^
   src\dtsx\metadata_chunk.cpp src\dtsx\object_metadata_block.cpp ^
   src\dtsx\object_metadata_header.cpp src\dtsx\object_metadata_updates.cpp ^
@@ -122,6 +126,19 @@ cl /nologo ^
   bin\obj\dtsx-decode\frame_header.obj ^
   bin\obj\dtsx-decode\frame_sync.obj ^
   bin\obj\dtsx-decode\uhd_frame.obj ^
+  bin\obj\dtsx-decode\ace_bit_reader.obj ^
+  bin\obj\dtsx-decode\ace_frame.obj ^
+  bin\obj\dtsx-decode\ace_lfe.obj ^
+  bin\obj\dtsx-decode\ace_coarse_residual.obj ^
+  bin\obj\dtsx-decode\ace_scalar_dequant.obj bin\obj\dtsx-decode\ace_final_refinement.obj ^
+  bin\obj\dtsx-decode\ace_stream.obj ^
+  bin\obj\dtsx-decode\ace_vq.obj ^
+  bin\obj\dtsx-decode\ace_band_scheduler.obj ^
+  bin\obj\dtsx-decode\ace_spectral_payload.obj ^
+  bin\obj\dtsx-decode\ace_mdct.obj ^
+  bin\obj\dtsx-decode\ace_mdct_f32.obj ^
+  bin\obj\dtsx-decode\ace_deemphasis.obj ^
+  bin\obj\dtsx-decode\ace_lts.obj ^
   bin\obj\dtsx-decode\lbr_chunk.obj ^
   bin\obj\dtsx-decode\raw_info.obj ^
   bin\obj\dtsx-decode\metadata_chunk.obj ^

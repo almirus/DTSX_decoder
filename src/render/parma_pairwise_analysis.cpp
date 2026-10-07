@@ -33,7 +33,6 @@ float time_coefficient(
 
 bool ParmaPairwiseAnalysis::initialize(
     std::uint32_t sample_rate) noexcept {
-    // libdtsx.so: DTS_ParmaDec_SetSampleRate, 0x70004.
     if (sample_rate != 32000U
         && sample_rate != 44100U
         && sample_rate != 48000U) {
@@ -69,7 +68,6 @@ bool ParmaPairwiseAnalysis::initialize(
 }
 
 void ParmaPairwiseAnalysis::reset() noexcept {
-    // libdtsx.so: DTS_ParmaDec_CleanInternalBuffers, 0x7077c.
     first_energy_.fill(0.0F);
     second_energy_.fill(0.0F);
     sum_energy_.fill(0.0F);
@@ -89,7 +87,6 @@ void ParmaPairwiseAnalysis::process(
     float* position,
     float* balance,
     float* diffuseness) noexcept {
-    // libdtsx.so: DTS_ParmaDec_SpatialAnalysisPairwise, 0x77328.
     if (!initialized_ || first_real == nullptr
         || first_imaginary == nullptr || second_real == nullptr
         || second_imaginary == nullptr || position == nullptr
@@ -227,8 +224,7 @@ void ParmaPairwiseAnalysis::process(
                     : metric_slow_release_;
             }
         } else {
-            // DTS_ParmaDec_SpatialAnalysisPairwise, 0x77328:
-            // in the 0.7..0.9 transition region the native controller uses
+            // In the 0.7..0.9 transition region the controller uses
             // the fast coefficient while the metric rises, and the regular
             // release coefficient while it falls.
             coefficient =

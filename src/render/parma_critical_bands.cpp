@@ -10,7 +10,6 @@ bool parma_initialize_critical_band_partitions(
     std::size_t partition_count,
     std::vector<std::uint32_t>& widths,
     std::vector<float>& scale) noexcept {
-    // libdtsx.so: DTS_CritBandInitPartitions, 0x76764.
     widths.clear();
     scale.clear();
     if (sample_rate == 0U
@@ -83,7 +82,6 @@ void parma_group_critical_bands(
     float* output,
     const std::uint32_t* widths,
     std::size_t partition_count) noexcept {
-    // libdtsx.so: DTS_CritBandGroup, 0x76948.
     std::size_t input_offset = 0U;
     for (std::size_t partition = 0U;
          partition < partition_count;
@@ -103,7 +101,6 @@ void parma_ungroup_critical_bands(
     float* output,
     const std::uint32_t* widths,
     std::size_t partition_count) noexcept {
-    // libdtsx.so: DTS_CritBandUnGroup, 0x769b4.
     std::size_t output_offset = 0U;
     for (std::size_t partition = 0U;
          partition < partition_count;

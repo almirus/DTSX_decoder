@@ -33,10 +33,6 @@ bool unpack_combined_mix_metadata(
     std::uint8_t association_mode,
     std::uint32_t fallback_reference_speaker_activity_mask,
     CombinedMixMetadata& metadata) noexcept {
-    // libdtsx.so: sub_C59E0, 0xc59e0, followed by sub_9FB34,
-    // 0x9fb34.  The native detailed parser is deliberately not bounded to
-    // the nominal metadata payload byte count: the combined type-2 chunk
-    // continues through its CRC and into the associated type-69 navigation.
     metadata = {};
     const PreliminaryMetadataHeader preliminary =
         unpack_preliminary_metadata_header(source, association_mode);
@@ -185,7 +181,6 @@ bool unpack_combined_mix_metadata(
 
 PreliminaryMetadataHeader unpack_preliminary_metadata_header(
     bitstream::Cursor& source, std::uint8_t association_mode) noexcept {
-    // libdtsx.so: sub_C59E0, 0xc59e0..0xc5b2c.
     PreliminaryMetadataHeader result;
     result.chunk_id = static_cast<std::uint8_t>(source.extract_unsigned(8U));
     result.raw_flags = static_cast<std::uint8_t>(source.extract_unsigned(8U));
@@ -204,9 +199,6 @@ PreliminaryMetadataHeader unpack_preliminary_metadata_header(
     case 3U:
     case 4U:
         selector_bits = 3U;
-        // sub_C59E0 stores raw_flags >> 6 in the alternate-association
-        // byte and later tests that byte for zero.  Both high bits therefore
-        // select the alternate form; bit 5 independently selects short form.
         result.alternate_association = (result.raw_flags >> 6U) != 0U;
         result.short_form = (result.raw_flags & 0x20U) != 0U;
         break;
@@ -242,7 +234,6 @@ bool unpack_audio_presentation_metadata(
     const PreliminaryMetadataHeader& preliminary,
     bool short_form,
     AudioPresentationMetadata& metadata) noexcept {
-    // libdtsx.so: PrelimUnpackAudioPresMetaDataChunk, 0xc5370..0xc5928.
     if (preliminary.chunk_id != 241U || !preliminary.primary) {
         return false;
     }
@@ -395,9 +386,6 @@ bool unpack_audio_presentation_object_bodies(
         return false;
     }
 
-    // libdtsx.so: dtsParseExSSChunks, 0xa203c..0xa20f8.
-    // The object bodies are followed by optional layout-specific coherent
-    // render gains used by renderer mode 5.
     metadata.alternative_rendering_metadata_present =
         source.extract_unsigned(1U) != 0U;
     if (!metadata.alternative_rendering_metadata_present) {
@@ -408,9 +396,6 @@ bool unpack_audio_presentation_object_bodies(
          ++object_index) {
         ObjectMetadataBlock& object =
             metadata.objects[object_index];
-        // libdtsx.so: dtsParseExSSChunks 0xa1f48. The per-object
-        // alternative-rendering presence bit is absent when object+0x800
-        // has no waveform decoder.
         if (waveform_decoder_available != nullptr
             && !(*waveform_decoder_available)[object_index]) {
             continue;

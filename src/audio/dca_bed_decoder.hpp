@@ -19,6 +19,15 @@ struct DcaDecodedBed final {
     std::uint32_t samples_per_channel = 0U;
 };
 
+struct DcaDecodedObjectAsset final {
+    std::uint8_t asset_ordinal = 0U;
+    std::uint8_t asset_index = 0U;
+    std::uint16_t coding_components = 0U;
+    std::vector<std::vector<std::int32_t>> channels;
+    std::uint32_t sample_rate = 0U;
+    std::uint32_t samples_per_channel = 0U;
+};
+
 struct DcaCoreStreamInfo final {
     std::uint32_t channels = 0U;
     std::uint32_t sample_rate = 0U;
@@ -58,7 +67,8 @@ public:
     [[nodiscard]] bool decode_extension(
         const dtsx::ElementaryFrame& frame,
         DcaDecodedBed& decoded,
-        bool require_dtsx_71 = true);
+        bool require_dtsx_71 = true,
+        std::vector<DcaDecodedObjectAsset>* object_assets = nullptr);
 
     [[nodiscard]] const DcaDecodedBed& decoded_core() const noexcept {
         return decoded_core_;
@@ -85,6 +95,8 @@ private:
     std::unique_ptr<dcadec_context, ContextDeleter> context_;
     std::unique_ptr<dcadec_context, ContextDeleter> core_context_;
     std::unique_ptr<dcadec_context, ContextDeleter> core_probe_context_;
+    std::vector<std::unique_ptr<dcadec_context, ContextDeleter>>
+        object_asset_contexts_;
     std::vector<std::uint8_t> pending_core_;
     DcaDecodedBed decoded_core_;
     DcaCoreStreamInfo core_stream_info_;

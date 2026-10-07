@@ -493,13 +493,17 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
     return ret;
 }
 
-struct dcadec_exss_info *exss_get_info(struct exss_parser *exss)
+struct dcadec_exss_info *exss_get_info(struct exss_parser *exss,
+                                       int asset_ordinal)
 {
+    if (asset_ordinal < 0 || asset_ordinal >= exss->nassets)
+        return NULL;
+
     struct dcadec_exss_info *info = ta_znew(NULL, struct dcadec_exss_info);
     if (!info)
         return NULL;
 
-    struct exss_asset *asset = &exss->assets[0];
+    struct exss_asset *asset = &exss->assets[asset_ordinal];
 
     info->nchannels = asset->nchannels_total;
     info->sample_rate = asset->max_sample_rate;

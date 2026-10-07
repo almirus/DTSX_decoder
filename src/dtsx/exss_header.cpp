@@ -8,7 +8,6 @@ namespace dtsx {
 bool unpack_exss_header(bitstream::Cursor& source,
                         ExssHeader& header,
                         std::uint32_t selected_waveform_index) noexcept {
-    // libdtsx.so: DTSFrameScanner_ParseExSS, 0x306a8..0x30b04.
     const bitstream::Cursor frame_start = source;
     const std::uint32_t frame_available_bits = source.remaining_bits();
     if (source.remaining_bits() < 32U
@@ -234,7 +233,6 @@ bool unpack_exss_header(bitstream::Cursor& source,
 }
 
 bool validate_exss_frame(bitstream::Cursor source) noexcept {
-    // libdtsx.so: DTSFrameScanner_IsValidExSS, 0x3057c.
     if (source.remaining_bits() < 32U
         || source.extract_unsigned(32U) != 0x64582025U) {
         return false;

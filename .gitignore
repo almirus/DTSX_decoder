@@ -1,0 +1,36 @@
+# Build products
+/out/
+/*.obj
+/*.exe
+/*.deb
+*.pdb
+*.ilk
+*.res
+
+# Local fixtures and reverse-engineering material
+/test_files/
+/decompiled/
+/docs/
+/TASK_PROGRESS.md
+/tmp_*
+
+# IDE metadata
+/.idea/
+/src/.idea/
+
+# The release build embeds only these runtime resources.
+/bin/*
+!/bin/win/
+/bin/win/*
+!/bin/win/x64/
+/bin/win/x64/*
+!/bin/win/x64/DTSXDecoder.dll
+!/bin/win/x64/MSVCP140_APP.dll
+!/bin/win/x64/VCCORLIB140_APP.dll
+!/bin/win/x64/VCRUNTIME140_1_APP.dll
+!/bin/win/x64/VCRUNTIME140_APP.dll
+
+# Local analysis and regression tooling is not part of the published decoder.
+/tools/*
+!/tools/object-viewer/
+!/tools/object-viewer/**

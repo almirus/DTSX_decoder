@@ -22,6 +22,15 @@ constexpr std::array<std::uint32_t, 4U> kStandardHeightSpeakerMasks = {{
 [[nodiscard]] std::vector<std::uint32_t>
 expand_speaker_activity_mask(std::uint32_t mask);
 
+// Physical LFE is activity 3 / speaker bit 5.  ACE encodes it as a
+// dedicated LFE stream, so bed mono/stereo waveform buses are packed in
+// expansion order with that speaker omitted.  ACEW object descriptors that
+// include LFE in their own mask still use expand_speaker_activity_mask.
+constexpr std::uint32_t kPhysicalLfeSpeakerMask = 1U << 5U;
+
+[[nodiscard]] std::vector<std::uint32_t>
+expand_speaker_activity_mask_without_lfe(std::uint32_t mask);
+
 [[nodiscard]] std::uint32_t speaker_mask_to_activity_mask(
     std::uint32_t mask) noexcept;
 
@@ -39,11 +48,6 @@ expand_speaker_activity_mask(std::uint32_t mask);
     std::string_view name,
     std::uint32_t& speaker_mask) noexcept;
 
-// Alternate F14000D0..D4 extensions carry two XLL channel sets.  Arcam
-// dts_object_decoder.c (sub_84167A80) takes the first-set channel count from
-// the decoded XLL header; the trailing four-channel set is the rendered upper
-// layer (TFL/TFR/TBL/TBR).  Leading channels remain unmapped object
-// waveforms with speaker mask zero.
 [[nodiscard]] std::vector<std::uint32_t>
 alternate_extension_speaker_masks(
     std::size_t first_set_channel_count,

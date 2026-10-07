@@ -93,6 +93,7 @@ struct exss_parser {
 extern const uint32_t exss_sample_rates[16];
 
 int exss_parse(struct exss_parser *exss, uint8_t *data, int size);
-struct dcadec_exss_info *exss_get_info(struct exss_parser *exss) __attribute__((cold));
+struct dcadec_exss_info *exss_get_info(struct exss_parser *exss,
+                                       int asset_ordinal) __attribute__((cold));
 
 #endif

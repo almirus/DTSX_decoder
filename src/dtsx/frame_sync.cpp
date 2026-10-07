@@ -15,7 +15,6 @@ constexpr std::uint32_t kExtensionLittleEndian = 0x64582025U;
 
 std::optional<StreamPacking> classify_sync_word(
     std::uint32_t sync_word) noexcept {
-    // libdtsx.so: DTSXDecParser_SAPI_CaptureFrame, 0x44240..0x44610.
     switch (sync_word) {
     case kCore16BitBigEndian:
         return StreamPacking::Core16BitBigEndian;
@@ -39,15 +38,13 @@ std::optional<StreamPacking> classify_sync_word(
 
 bool is_valid_core_sync(std::uint32_t word,
                         std::uint32_t byte_swapped_word) noexcept {
-    // libdtsx.so: DTSFrameScanner_IsValidCoreSync, 0x2ee40.
     return byte_swapped_word == kCore16BitBigEndian
         || byte_swapped_word == kCore16BitLittleEndian
         || word == kCore16BitBigEndian;
 }
 
-bool is_valid_core_substream_sync(std::uint32_t word,
+bool is_valid_core_substream_sync(std::uint32_t,
                                   std::uint32_t byte_swapped_word) noexcept {
-    // libdtsx.so: DTSFrameScanner_IsValidCoreSS, 0x2ef28.
     return byte_swapped_word == kCore14BitBigEndian
         || byte_swapped_word == kCore14BitLittleEndian;
 }

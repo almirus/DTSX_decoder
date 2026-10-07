@@ -19,11 +19,25 @@ struct SpeakerPosition final {
 
 bool position_for_channel(
     const std::string& name,
+    bool has_back_pair,
     float& azimuth,
     float& elevation) noexcept {
     std::uint32_t speaker_mask = 0U;
     std::string_view canonical_name;
-    return dtsx::standard_speaker_mask(name, speaker_mask)
+    // With a separate back pair, WAVE/CLI SL and SR represent the 7.1
+    // side-surround pair. The native
+    // DTS 7.1.4 channel layout programs these as LSS/RSS (physical bits
+    // 9/10, +/-90 degrees), not as the legacy SL/SR pair (bits 3/4,
+    // +/-110 degrees). The native oracle therefore has 34 hull triplets;
+    // using the legacy coordinates leaves gaps in the rear upper hull.
+    // In 5.1(side), SL/SR are the only surrounds: use the legacy DTS
+    // +/-110 degree pair. Mapping them to +/-90 leaves the rear hemisphere
+    // outside the hull and makes virtual-ring fold matrix construction fail.
+    const std::string_view dts_name = has_back_pair && name == "SL"
+        ? std::string_view("LSS")
+        : has_back_pair && name == "SR" ? std::string_view("RSS")
+                       : std::string_view(name);
+    return dtsx::standard_speaker_mask(dts_name, speaker_mask)
         && dtsx::standard_speaker_coordinates(
             speaker_mask, azimuth, elevation, canonical_name);
 }
@@ -61,12 +75,7 @@ bool make_native_hull_triplet(
     std::size_t second,
     std::size_t third,
     PannerTriplet& triplet) noexcept {
-    // libdtsx.so: dts_3d_hull_f32_t_initialize/sub_E7714.  Native does
-    // not use the ordinary Cartesian convex-hull plane test.  A candidate
-    // loudspeaker triplet must stay in one elevation hemisphere and every
-    // relevant point, expressed in that triplet basis, must have a
-    // coefficient sum no greater than 1 + the configured hull epsilon.
-    constexpr float kHullEpsilon = 1.0e-7F;
+    constexpr float kHullEpsilon = 1.0e-6F;
     const std::array<PannerVector, 3U> speakers = {
         points[first], points[second], points[third]};
     const bool upper = std::all_of(
@@ -118,6 +127,11 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
     : real_channel_count_(
         static_cast<std::uint32_t>(layout.channels.size())) {
     std::vector<SpeakerPosition> speakers;
+    const bool has_back_pair =
+        std::find(layout.channels.begin(), layout.channels.end(), "BL")
+            != layout.channels.end()
+        && std::find(layout.channels.begin(), layout.channels.end(), "BR")
+            != layout.channels.end();
     for (std::size_t channel = 0;
          channel < layout.channels.size();
          ++channel) {
@@ -127,7 +141,7 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
             continue;
         }
         if (!position_for_channel(
-                layout.channels[channel], azimuth, elevation)) {
+                layout.channels[channel], has_back_pair, azimuth, elevation)) {
             throw std::runtime_error(
                 "layout contains a channel unsupported by object panner");
         }
@@ -158,12 +172,6 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
 
     std::vector<PannerVector> points;
     std::vector<std::uint32_t> destinations;
-    // libdtsx.so's virtual-auto initializer (sub_85F08/sub_86020 and
-    // sub_86550) adds a +45/-45 degree virtual copy for each real speaker
-    // when the corresponding upper/lower ring is absent.  The virtual
-    // copies are mapped back to the same destination channel by the native
-    // matrix; retaining that destination here gives the same accumulation
-    // without exposing virtual channels in the output layout.
     const bool has_upper_ring = std::any_of(
         speakers.begin(), speakers.end(), [](const SpeakerPosition& speaker) {
             return speaker.elevation > 25.0F;
@@ -254,7 +262,15 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
         }
         if (!has_upper_ring) {
             for (const SpeakerPosition& speaker : speakers) {
-                if (std::fabs(speaker.elevation) <= 25.0F) {
+                // dts_3d_virtual_auto_vector_base_panner_t_initialize:
+                // when only a lower ring exists, its azimuths are mirrored
+                // to +45 degrees. A horizontal-only layout is mirrored in
+                // both directions. Do not synthesize an upper copy for the
+                // equator when a real lower ring already supplies the ring
+                // topology.
+                if ((has_lower_ring && speaker.elevation < -25.0F)
+                    || (!has_lower_ring
+                        && std::fabs(speaker.elevation) <= 25.0F)) {
                     append_virtual_ring_point(
                         speaker.azimuth, 45.0F, speaker.channel);
                 }
@@ -262,7 +278,14 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
         }
         if (!has_lower_ring) {
             for (const SpeakerPosition& speaker : speakers) {
-                if (std::fabs(speaker.elevation) <= 25.0F) {
+                // Native 7.1.4 exposes 15 hull points: 11 real full-range
+                // speakers plus four -45-degree mirrors of TFL/TFR/TBL/TBR.
+                // Mirroring the seven horizontal speakers instead produces
+                // a non-native 18-point hull with uncovered rear/height
+                // regions (for example az=165, el=52.5).
+                if ((has_upper_ring && speaker.elevation > 25.0F)
+                    || (!has_upper_ring
+                        && std::fabs(speaker.elevation) <= 25.0F)) {
                     append_virtual_ring_point(
                         speaker.azimuth, -45.0F, speaker.channel);
                 }
@@ -315,7 +338,7 @@ LayoutPanner::LayoutPanner(const ChannelLayout& layout)
                         0.0F),
                     panner_channel_count_,
                     triplets_,
-                    1.0e-7F,
+                    1.0e-6F,
                     power_gains)) {
                 throw std::runtime_error(
                     "cannot construct native virtual-speaker fold matrix");
@@ -401,10 +424,6 @@ bool LayoutPanner::gains_q15(
         }
     }
     std::vector<float> floating;
-    // libdtsx.so: sub_5F12C always sets source normalization mode 1.
-    // dts_3d_virtual_auto_vector_base_panner_t_pan maps mode 1 to
-    // constant-power normalization; preserve-spatial-separation is the
-    // separate final argument controlling virtual-speaker folding.
     const PannerNormalization normalization =
         PannerNormalization::ConstantPower;
     const PannerNormalization hull_normalization =
@@ -422,7 +441,7 @@ bool LayoutPanner::gains_q15(
                   coordinates.azimuth_degrees, elevation),
               panner_channel_count_,
               triplets_,
-              1.0e-7F,
+              1.0e-6F,
               hull_normalization,
               floating)
         : pan_extended_source(
@@ -433,7 +452,7 @@ bool LayoutPanner::gains_q15(
               rotation_degrees,
               panner_channel_count_,
               triplets_,
-              1.0e-7F,
+              1.0e-6F,
               hull_normalization,
               floating);
     if (!panned) {

@@ -10,7 +10,6 @@ void parma_filterbank_phase_shift(
     float* imaginary,
     float radians,
     std::size_t count) noexcept {
-    // libdtsx.so: ParmaDecIntermediate_FilterbankPhaseShift, 0x76a24.
     const float cosine = std::cos(radians);
     const float sine = std::sin(radians);
     for (std::size_t index = 0U; index < count; ++index) {
@@ -35,7 +34,6 @@ void parma_compute_downmatrix_coefficients_pairwise(
     float second_decode_angle,
     float maximum_angle,
     std::size_t count) noexcept {
-    // libdtsx.so: DTS_ParmaDec_ComputeDmtxCoeffsPairwise, 0x77098.
     constexpr float kHalfPi = 1.5708F;
     const float decode_midpoint =
         (first_decode_angle + second_decode_angle) * 0.5F;
@@ -97,7 +95,6 @@ void parma_compute_repan_coefficients_pairwise(
     float minimum_angle,
     float maximum_angle,
     std::size_t count) noexcept {
-    // libdtsx.so: DTS_ParmaDec_ComputeRepanCoeffsPairwise, 0x771e4.
     constexpr float kHalfPi = 1.5708F;
     for (std::size_t index = 0U; index < count; ++index) {
         const float direct = 1.0F - diffuseness[index];
@@ -150,7 +147,6 @@ void parma_extract_matrixed_pairwise_channel(
     float decode_angle,
     float maximum_angle,
     std::size_t count) noexcept {
-    // libdtsx.so: DTS_ParmaDec_ExtractMatrixedChansPairwise, 0x77ae8.
     if (count == 0U || count > 64U) {
         return;
     }
@@ -192,7 +188,6 @@ void parma_repan_pairwise_channel(
     float minimum_angle,
     float maximum_angle,
     std::size_t count) noexcept {
-    // libdtsx.so: DTS_ParmaDec_RepanSingleChansPairwise, 0x77cd4.
     if (count == 0U || count > 64U) {
         return;
     }

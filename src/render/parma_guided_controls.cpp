@@ -9,9 +9,6 @@
 namespace dtsx_decode {
 namespace {
 
-// visio-libdtsx.so dtsx_dmixCoeffTable[0..63]. The preliminary metadata
-// carries the six-bit table index; dtsPlayerParmaControl receives the
-// resulting unsigned Q15 coefficient matrix and converts it by 1 / 32768.
 constexpr std::array<std::uint16_t, 64U> kDtsxDownmixCoefficientQ15 = {{
     0U, 35U, 37U, 39U, 41U, 44U, 46U, 49U,
     52U, 55U, 58U, 62U, 65U, 69U, 73U, 78U,
@@ -148,7 +145,7 @@ bool derive_parma_guided_controls(
                 reference * metadata.added_speaker_masks.size() + added];
             // The parser retained the six-bit dtsx_dmixCoeffTable index.
             // UpdateParmaCustomCoeffs receives the table's unsigned Q15
-            // value and applies the exact 1 / 32768 conversion at 0x114de8.
+            // value and applies the exact 1 / 32768 conversion.
             controls.custom_encoder_coefficients[row][
                 static_cast<std::size_t>(reference_ordinal)]
                 = static_cast<float>(kDtsxDownmixCoefficientQ15[code])

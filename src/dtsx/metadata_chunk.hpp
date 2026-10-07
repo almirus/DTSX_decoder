@@ -53,7 +53,8 @@ struct MetadataChunkLocation final {
 [[nodiscard]] std::vector<MetadataChunkLocation> scan_metadata_chunks(
     bitstream::Cursor source,
     std::uint32_t frame_bytes,
-    std::uint8_t association_mode = 1U);
+    std::uint8_t association_mode = 1U,
+    std::uint32_t step_bytes = 4U);
 
 [[nodiscard]] const MetadataElementHeader* find_metadata_element_for_asset(
     const MetadataChunkEnvelope& envelope,

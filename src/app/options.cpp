@@ -200,6 +200,18 @@ Options parse_options(int argc, wchar_t** argv) {
             options.upmix = true;
         } else if (arg == L"--imax-dsp") {
             options.imax_dsp = true;
+        } else if (arg == L"--p2-decoder") {
+            const std::string mode = narrow_ascii(
+                require_value(argc, argv, i, "--p2-decoder"),
+                "--p2-decoder");
+            if (mode == "dll") {
+                options.p2_internal = false;
+            } else if (mode == "internal") {
+                options.p2_internal = true;
+            } else {
+                throw std::runtime_error(
+                    "--p2-decoder must be dll or internal");
+            }
         } else if (arg == L"--imax-small") {
             options.imax_small_speakers = narrow_ascii(
                 require_value(argc, argv, i, "--imax-small"),
@@ -271,6 +283,7 @@ void print_help() {
         << "      --duration TIME    Decode only this duration: 10s, 10m, 1h2m5s\n"
         << "      --render MODE      objects, objects-only or bed; default objects\n"
         << "      --upmix            PARMA guided/blind upmix to 5.1.4/7.1.4\n"
+        << "      --p2-decoder MODE  P2 PCM backend: dll or internal (diagnostic)\n"
         << "      --imax-dsp         Recovered AVRx0 70 Hz LFE/bass profile\n"
         << "      --imax-small LIST  Small speakers: all, none or FL,FR,...; default all\n"
         << "      --overwrite        Replace existing output\n"

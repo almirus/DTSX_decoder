@@ -10,7 +10,6 @@ bool unpack_xll_channel_parameters(
     std::uint8_t parameter_bits,
     const std::vector<std::uint8_t>& adaptive_prediction_orders,
     XllChannelParameters& parameters) noexcept {
-    // libdtsx.so: dtsxXLLGetChannelParams, 0xb9ab8.
     if (parameter_bits == 0U || parameter_bits > 8U
         || adaptive_prediction_orders.empty()) {
         return false;

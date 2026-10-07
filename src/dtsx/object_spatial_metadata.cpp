@@ -43,20 +43,19 @@ std::int32_t unpack_rotation(bitstream::Cursor& source) noexcept {
 bool point_source_is_renderable(
     std::uint8_t metadata_mode,
     const PointSourceMetadata& point) noexcept {
-    // libdtsx(v2).so.c: updateRendererWith3dObjectMetadata configures every
-    // point/extended source in the object metadata.  Neither source_type nor
-    // coherent/fixed-distance flags suppress registration; those fields are
-    // consumed later by the native renderer path. Channel-metadata modes
-    // likewise accept every registered source.
     (void)metadata_mode;
     (void)point;
     return true;
 }
 
+bool point_source_is_reverse_renderable(
+    const PointSourceMetadata& point) noexcept {
+    return point.source_type <= 1U;
+}
+
 bool unpack_spatial_metadata(bitstream::Cursor& source,
                              const SpatialMetadataConfig& config,
                              std::vector<PointSourceMetadata>& points) {
-    // libdtsx.so: dtsParseExSSChunks, 0xa15bc..0xa199c.
     std::size_t total_points = 0;
     for (const std::uint8_t count : config.point_source_count_by_waveform) {
         total_points += count;

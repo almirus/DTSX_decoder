@@ -325,9 +325,6 @@ bool parse_alternate_layout(
     payload.insert(
         payload.end(), extension.payload.begin(), extension.payload.end());
 
-    // Arcam dts_uhd_chunk_parser (sub_84185004) bounds parsing by the
-    // declared chunk length.  The leading CRC region is variable-sized;
-    // it is not limited to the 48/49-byte forms seen in short samples.
     const std::size_t minimum_prefix = sizeof(std::uint32_t);
     std::size_t prefix_end = 0U;
     bool prefix_found = false;
@@ -386,12 +383,6 @@ bool parse_alternate_layout(
             payload, first_header_offset, layout.headers[0])) {
         return false;
     }
-    // Arcam dts_object_decoder.c sub_84167A80 (0x84167BEC..0x84167C28)
-    // takes the channel count from the associated XLL decoder.  In
-    // particular, D0 is not a one-channel profile: valid D0 streams carry
-    // either one point-source waveform or a three-channel multi-point source.
-    // The sync suffix therefore cannot be used as a channel-count
-    // discriminator.
     if (common_bit < 14U) {
         return false;
     }
@@ -681,8 +672,6 @@ std::int32_t rounded_multiply(
 bool decode_xll_downmix_coefficients(
     const XllChannelSetHeader& header,
     std::vector<std::int32_t>& coefficients) {
-    // libdtsx.so: dtsxDecoderLookUpLLESDownMixCoefArray,
-    // 0xb4ddc..0xb50fc.
     coefficients.clear();
     if (!header.external_downmix_coefficients.empty()) {
         if (header.external_downmix_coefficients.size()
@@ -840,8 +829,6 @@ void inverse_xll_downmix_samples(
     std::int32_t current_coefficient,
     std::int32_t previous_coefficient,
     std::uint8_t source_shift) {
-    // libdtsx.so: sub_B5828 and
-    // dtsxDecoderInv_LLESDownMixingCore, 0xb5828 and 0x10fb08.
     std::uint8_t interpolation_bits = 0U;
     std::uint64_t interpolation_rounding = 0U;
     if (destination.size() > 1U) {
@@ -1083,9 +1070,6 @@ bool reconstruct_two_frequency_bands(
     std::vector<std::int32_t> band_one,
     const std::array<std::int32_t, 7>& history,
     std::vector<std::int32_t>& output) {
-    // libdtsx.so: sub_B4B90, dtsxDecoderRevABksc,
-    // dtsxDecoderRevABkSpPred and dtsxDecoderReconstruct_192_copy,
-    // 0xb4b90 and 0x10f764..0x10fb58.
     if (band_zero.empty()
         || band_zero.size() != band_one.size()) {
         return false;
@@ -1188,8 +1172,6 @@ bool reconstruct_two_frequency_bands(
 
 std::int32_t xll_metadata_downmix_coefficient(
     std::uint8_t code) noexcept {
-    // libdtsx.so: sub_9FB34 indexes dtsx_dmixCoeffTable at
-    // 4 * (code - 1), with codes zero and one both selecting zero.
     if (code <= 1U) {
         return 0;
     }
@@ -1208,8 +1190,6 @@ bool XllFrameDecoder::decode_msb_frame(
         supplemental_channel_sets,
     const std::vector<XllLossyBaseChannel>&
         lossy_base_channels) {
-    // libdtsx.so: XLL ParseFrame/dtsx_initializeNavITable and
-    // dtsxXLLDecodeChannelSet, 0xbb20c, 0xb4384, and 0xb8fc4.
     frame = {};
     last_error_.clear();
     std::vector<XllSupplementalChannelSet>
@@ -1381,11 +1361,6 @@ bool XllFrameDecoder::decode_msb_frame(
         }
     }
 
-    // The standard 0x02000850 DTS:X envelope is followed by an 18-byte
-    // wrapper and then an ordinary, independently coded four-channel XLL
-    // channel set.  It inherits the main XLL segment geometry.  Prefer the
-    // private type-69 navigation supplied by libdtsx metadata when present;
-    // otherwise validate and decode the inline channel set directly.
     if (effective_supplemental_channel_sets.empty()
         && frame.extension.present
         && frame.extension.sync_word == 0x02000850U
@@ -2057,10 +2032,6 @@ bool XllFrameDecoder::decode_msb_frame(
         for (std::size_t channel = 0U;
              channel < header.probe.channel_count;
              ++channel) {
-            // libdtsx.so dtsxDecoderLossLessCombine and dcadec
-            // combine_residual_core_frame: a zero residual_encode bit
-            // means that the decoded XLL values are residuals to be added
-            // to the mapped lossy channel.
             if ((header.probe.channel_mask
                  & (1U << channel))
                 != 0U) {
@@ -2084,10 +2055,6 @@ bool XllFrameDecoder::decode_msb_frame(
                     || reference_speaker == (1U << 8U)
                     || reference_speaker == (1U << 9U)
                     || reference_speaker == (1U << 10U))) {
-                // libdtsx.so dtsGetChPosnBySpkrMask applies the native
-                // Ls/Lss and Rs/Rss equivalence while combining a Core
-                // residual.  The Core WAVE mask can expose this pair as
-                // side, back or DTS Lss/Rss positions.
                 const bool left_surround =
                     reference_speaker == (1U << 3U)
                     || reference_speaker == (1U << 7U)

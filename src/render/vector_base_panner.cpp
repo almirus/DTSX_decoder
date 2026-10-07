@@ -181,7 +181,6 @@ bool convert_power_gains_to_amplitude(
 bool append_polygon_vertex(
     std::vector<PannerVector>& polygon,
     const PannerVector& vertex) {
-    // libdtsx.so uses a fixed 64-vertex work buffer.
     if (polygon.size() >= 64U) {
         return false;
     }
@@ -554,8 +553,6 @@ bool pan_extended_line_raw(
 PannerVector panner_vector_from_degrees(
     float azimuth_degrees,
     float elevation_degrees) noexcept {
-    // libdtsx.so: sub_E7E40 and dts_base_vector3_f32_t_on_sphere_xz,
-    // 0xe7e40 and 0xd8b80.
     const float azimuth = azimuth_degrees * (kPi / 180.0F);
     const float elevation = elevation_degrees * (kPi / 180.0F);
     const float cos_elevation = std::cos(elevation);
@@ -623,8 +620,6 @@ bool pan_point_source(
     float hull_epsilon,
     PannerNormalization normalization,
     std::vector<float>& gains) noexcept {
-    // libdtsx.so: dts_3d_hull_f32_t_pan point-source path and sub_E7EBC,
-    // 0xe9890 and 0xe7ebc.
     if (destination_channel_count == 0U || triplets.empty()
         || hull_epsilon < 1.0e-12F || hull_epsilon > 0.001F) {
         return false;
@@ -640,10 +635,6 @@ bool pan_point_source(
             accumulated_weight)) {
         return false;
     }
-    // libdtsx.so: virtual custom/auto vector-base panners receive
-    // normalization_mode == 1 from sub_5F12C and apply
-    // dts_base_math_safe_sqrt_32f_vv to the hull gains before mapping
-    // and final normalization (0x8f66c/0x87e14).
     if (!convert_power_gains_to_amplitude(gains)) {
         return false;
     }
@@ -682,7 +673,6 @@ bool pan_extended_source(
     float hull_epsilon,
     PannerNormalization normalization,
     std::vector<float>& gains) noexcept {
-    // libdtsx.so: sub_E8320 and sub_E8E68, 0xe8320/0xe8e68.
     if (width_degrees < 0.0F || width_degrees > 360.0F
         || height_degrees < 0.0F || height_degrees > 360.0F
         || elevation_degrees < -90.0F || elevation_degrees > 90.0F) {
@@ -849,7 +839,6 @@ bool quantize_panner_gains(
     const std::vector<float>& gains,
     std::uint8_t fractional_bits,
     std::vector<std::int32_t>& quantized) noexcept {
-    // libdtsx.so: dts_base_math_convert_32f_to_32sq, 0xd5a18.
     if (fractional_bits > 30U) {
         return false;
     }

@@ -61,7 +61,6 @@ bool inverse_xll_fixed_prediction(
     std::uint8_t order,
     bool first_segment,
     std::array<std::int32_t, 8>& state) noexcept {
-    // libdtsx.so: inverseFixedPrediction, 0x112998.
     if (order > 3U) {
         return false;
     }
@@ -87,8 +86,6 @@ bool inverse_xll_adaptive_prediction(
     const std::vector<std::int32_t>& reflection_coefficients,
     bool first_segment,
     XllAdaptivePredictionState& state) noexcept {
-    // libdtsx.so: inverseAdaptivePrediction, 0x112aa8, and
-    // inverseAdaptivePredictionCore, 0x115a3c.
     const std::size_t order = reflection_coefficients.size();
     if (order == 0U || order > state.coefficients.size()
         || samples.size() < order) {
@@ -177,7 +174,6 @@ bool inverse_xll_joint_channel_decorrelation(
     const std::vector<std::int32_t>& source,
     std::vector<std::int32_t>& destination,
     std::int32_t coefficient) noexcept {
-    // libdtsx.so: inverseJChDecorrelationCore, 0x1159f8.
     if (source.size() != destination.size()) {
         return false;
     }

@@ -212,7 +212,6 @@ bool probe_xll_channel_set_header(
     XllChannelSetProbe& probe,
     std::uint8_t total_channel_sets,
     bool legacy_sync) noexcept {
-    // libdtsx.so: dtsx_decodeTryXLLChSetHeader, 0xb1f48..0xb255c.
     const bitstream::Cursor header_start = source;
     probe = {};
     probe.header_size = source.extract_unsigned(10U) + 1U;
@@ -291,8 +290,6 @@ bool unpack_xll_primary_channel_set_header(
     std::uint32_t preceding_hierarchy_channels,
     const XllChannelSetHeader* previous_header,
     std::uint8_t alternate_prefix_bits) noexcept {
-    // libdtsx.so: dtsx_decodeXLLChSetHeader primary-stream path,
-    // 0xb263c..0xb2e2c.
     const bitstream::Cursor header_start = source;
     header = {};
     XllChannelSetProbe& probe = header.probe;

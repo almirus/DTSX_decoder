@@ -101,7 +101,6 @@ void ParmaAnalysisFilterBank::process(
     const float* input,
     float* real,
     float* imaginary) noexcept {
-    // libdtsx.so: dts_flib_osfb_f32_t_analysis, 0x11d588.
     if (input == nullptr || real == nullptr || imaginary == nullptr) {
         return;
     }
@@ -187,7 +186,6 @@ void ParmaSynthesisFilterBank::process(
     const float* real,
     const float* imaginary,
     float* output) noexcept {
-    // libdtsx.so: DTS_ParmaDec_OSFilter_Synthesis, 0x76048.
     if (real == nullptr || imaginary == nullptr || output == nullptr) {
         return;
     }
@@ -278,9 +276,6 @@ void ParmaSynthesisFilterBank::process_x2(
     const float* second_imaginary,
     float* first_output,
     float* second_output) noexcept {
-    // visio-libdtsx.so: DTS_ParmaDec_OSFilter_Synthesis_x2, 0xf9ba8.
-    // The native routine packs two complex subband vectors into one FFT;
-    // calling the scalar synthesis twice changes cancellation and rounding.
     if (first_real == nullptr || first_imaginary == nullptr
         || second_real == nullptr || second_imaginary == nullptr
         || first_output == nullptr || second_output == nullptr

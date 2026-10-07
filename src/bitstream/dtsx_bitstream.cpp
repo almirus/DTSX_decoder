@@ -29,7 +29,6 @@ Cursor::Cursor(const std::uint32_t* words, std::uint32_t remaining_bits) noexcep
       valid_(true) {}
 
 std::uint32_t Cursor::extract_unsigned(std::uint32_t requested_bits) noexcept {
-    // libdtsx.so: dtsxBitstreamExtractBitsUnsigned, 0x642ac.
     if (requested_bits > remaining_bits_) {
         valid_ = false;
     }
@@ -48,7 +47,6 @@ std::uint32_t Cursor::extract_unsigned(std::uint32_t requested_bits) noexcept {
 }
 
 std::int32_t Cursor::extract_signed(std::uint32_t requested_bits) noexcept {
-    // libdtsx.so: dtsxBitstreamExtractBitsSigned, 0x64300.
     if (requested_bits > remaining_bits_) {
         valid_ = false;
     }
@@ -66,7 +64,6 @@ std::int32_t Cursor::extract_signed(std::uint32_t requested_bits) noexcept {
 
 bool Cursor::attempt_extract_signed(std::uint32_t requested_bits,
                                     std::int32_t& value) noexcept {
-    // libdtsx.so: dtsxBitstreamAttemptToExtractBitsSigned, 0x95f58.
     if (requested_bits > remaining_bits_) {
         value = 0;
         return false;
@@ -76,7 +73,6 @@ bool Cursor::attempt_extract_signed(std::uint32_t requested_bits,
 }
 
 std::uint32_t Cursor::lookahead_unsigned(std::uint32_t requested_bits) const noexcept {
-    // libdtsx.so: dtsxBitstreamLookaheadBitsUnsigned, 0x95fe4.
     const std::uint32_t merged = merge_words(current_word_, bit_offset_, requested_bits);
     return high_bits(merged, requested_bits);
 }
@@ -91,7 +87,6 @@ Cursor Cursor::limited(std::uint32_t bit_count) const noexcept {
 }
 
 void Cursor::fast_forward(std::int32_t requested_bits) noexcept {
-    // libdtsx.so: dtsxBitstreamFastForwardBits, 0x96010.
     const std::uint32_t nonnegative_bits =
         requested_bits < 0 ? 0U : static_cast<std::uint32_t>(requested_bits);
     if (nonnegative_bits > remaining_bits_) {

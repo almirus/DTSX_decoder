@@ -10,6 +10,7 @@ namespace dtsx_decode {
 
 void decode_p2_stream(
     const Options& options,
-    const std::filesystem::path& output);
+    const std::filesystem::path& output,
+    bool write_main_output = true);
 
 } // namespace dtsx_decode

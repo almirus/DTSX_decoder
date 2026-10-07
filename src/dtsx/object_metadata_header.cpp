@@ -4,7 +4,6 @@ namespace dtsx {
 
 ObjectMetadataPreamble unpack_object_metadata_preamble(
     bitstream::Cursor& source, std::uint8_t waveform_count_bits) {
-    // libdtsx.so: dtsParseExSSChunks, 0xa0dac..0xa2220.
     ObjectMetadataPreamble result;
     result.metadata_mode =
         static_cast<std::uint8_t>(source.extract_unsigned(2U));
@@ -42,7 +41,6 @@ ObjectMetadataPreamble unpack_object_metadata_preamble(
 
 ObjectSpatialHeader unpack_object_spatial_header(
     bitstream::Cursor& source, const ObjectMetadataPreamble& preamble) {
-    // libdtsx.so: dtsParseExSSChunks, 0xa1cc0..0xa1e30.
     ObjectSpatialHeader result;
     result.parser_config.extent_mode = preamble.extent_mode;
     result.parser_config.extent_value_bits = preamble.extent_value_bits;

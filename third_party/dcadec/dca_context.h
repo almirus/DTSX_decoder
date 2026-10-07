@@ -217,6 +217,15 @@ typedef void (*dcadec_log_cb)(int level, const char *file, int line,
 DCADEC_API int dcadec_context_parse(struct dcadec_context *dca, uint8_t *data, size_t size);
 
 /**
+ * Select the zero-based EXSS asset ordinal decoded by this context.
+ * The selection persists across packets and must be set before parsing.
+ * Native DTS:X keeps one persistent audio decoder per asset/object stream;
+ * the original libdcadec API hard-wired asset zero.
+ */
+DCADEC_API int dcadec_context_set_exss_asset(struct dcadec_context *dca,
+                                             unsigned int asset_ordinal);
+
+/**
  * Get information about DTS core payload of the parsed packet.
  *
  * @param dca   Pointer to decoder context.

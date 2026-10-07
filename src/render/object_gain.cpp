@@ -35,9 +35,6 @@ constexpr std::array<std::int32_t, 100> kDownmixCoefficientTable = {
 
 std::int32_t decode_object_presentation_gain_q23(
     std::uint8_t gain_code) noexcept {
-    // libdtsx.so: dtsLookUpScaleCoeffTable(code, 1), 0x9e6c8,
-    // followed by the Q15 x Q23 products in sub_5F12C,
-    // sub_5F810, sub_5FE60, and sub_60444.
     std::size_t table_index = 0U;
     if (gain_code > 1U) {
         table_index = std::min<std::size_t>(
@@ -49,9 +46,6 @@ std::int32_t decode_object_presentation_gain_q23(
 
 std::int32_t decode_object_alternative_presentation_gain_q23(
     std::uint8_t gain_code) noexcept {
-    // libdtsx(v2).so.c: dtsPlayerObjectRenderer_RenderObjects,
-    // 0x123884. Renderer mode 5 uses dtsLookUpScaleCoeffTable(code, 3):
-    // codes below 23 are clamped to 23 before the table lookup.
     const std::uint8_t clamped_code =
         gain_code < 23U ? 23U : gain_code;
     const std::size_t table_index = std::min<std::size_t>(
@@ -64,16 +58,9 @@ std::int32_t decode_object_point_gain_q23(
     std::uint8_t gain_code,
     std::int32_t object_gain_q15,
     std::int32_t presentation_gain_q23) noexcept {
-    // libdtsx.so: dtsPlayerObjectRenderer_SetupObjectRenderer,
-    // 0x5f3a0, point/extended-source gain calculation.
     if (gain_code == 0U || gain_code > kScaleCoefficientTable.size()) {
         return 0;
     }
-    // libdtsx.so sub_5F12C performs this inner product in 32-bit ARM
-    // arithmetic and only widens the following presentation-gain product.
-    // Object gains with exponent 2/3 therefore wrap before the logical
-    // Q15 shift. Widening this multiplication produces gains up to 8.0
-    // instead of the native 0..4 range and severely clips object PCM.
     const std::uint32_t wrapped_product =
         static_cast<std::uint32_t>(object_gain_q15)
             * static_cast<std::uint32_t>(
@@ -93,8 +80,6 @@ std::int32_t decode_object_source_gain_q23(
     std::uint8_t object_gain_exponent,
     std::uint8_t point_gain_code,
     std::int32_t presentation_gain_q23) noexcept {
-    // libdtsx.so: dtsParseExSSChunks object gain at 0xa1dc0 and
-    // dtsPlayerObjectRenderer_SetupObjectRenderer at 0x5f3a0.
     if (object_gain_code == 0U
         || object_gain_code > kScaleCoefficientTable.size()
         || object_gain_exponent > 3U) {
@@ -112,9 +97,6 @@ std::int32_t decode_object_source_gain_q23(
 std::int32_t decode_object_destination_gain_q23(
     std::uint8_t gain_code,
     std::int32_t presentation_gain_q23) noexcept {
-    // libdtsx.so: sub_5F810/sub_5FE60, 0x5f810/0x5fe60.
-    // Codes zero and one select entry zero. Every larger code selects
-    // every fourth dtsx_dmixCoeffTable entry starting at entry four.
     const std::size_t table_index = gain_code > 1U
         ? 4U * static_cast<std::size_t>(gain_code - 1U)
         : 0U;

@@ -11,8 +11,6 @@ bool render_object_waveforms(
     GainApplyMode mode,
     bool clamp_output,
     bool snap_gain_to_zero_db) noexcept {
-    // libdtsx.so: dts_3d_complex_channel_renderer_t_render,
-    // 0xe73a0..0xe7628.
     if (destination_channels.empty()) {
         return waveforms.empty();
     }

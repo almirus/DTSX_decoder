@@ -6,7 +6,6 @@ namespace dtsx {
 
 LbrChunkHeader unpack_lbr_chunk_header(
     bitstream::Cursor& source) noexcept {
-    // libdtsx.so: dtsReadLBRchunkHeader, 0x2f148.
     LbrChunkHeader result;
     result.chunk_id = static_cast<std::uint8_t>(source.extract_unsigned(8U));
     const std::uint8_t second_byte =
@@ -28,7 +27,6 @@ bool parse_lbr_channels(bitstream::Cursor& source,
                         std::uint32_t& speaker_count,
                         std::uint32_t& speaker_mask,
                         bool& has_extension) noexcept {
-    // libdtsx.so: dtsParseLBRtoGetNumchannels, 0x2f1c4.
     if (source.extract_unsigned(32U) != 0x0A801921U) {
         return false;
     }

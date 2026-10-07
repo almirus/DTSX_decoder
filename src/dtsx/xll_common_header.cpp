@@ -6,7 +6,6 @@ namespace dtsx {
 
 bool unpack_xll_common_header(
     bitstream::Cursor& source, XllCommonHeader& header) noexcept {
-    // libdtsx.so: dtsx_decodeXLLCommonHeader, 0xb40d0.
     const bitstream::Cursor frame_start = source;
     header = {};
     header.sync = source.extract_unsigned(32U);

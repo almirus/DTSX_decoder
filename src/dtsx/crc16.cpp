@@ -27,7 +27,6 @@ constexpr std::array<std::uint16_t, 16> kCrcTable = {
 } // namespace
 
 bool valid_crc16(bitstream::Cursor& source, std::uint32_t bit_count) noexcept {
-    // libdtsx.so: dtsValidCRC, 0x2ee98. The table is read from 0x127e74.
     if (bit_count == 0U) {
         return false;
     }

@@ -31,10 +31,6 @@ constexpr ParmaBlindChannelRule unused() noexcept {
     return {};
 }
 
-// visio-libdtsx.so: DTS_ParmaDec_SetBlind, row 17. The three native
-// planes are unk_171644 (four source indices per channel), unk_17C5D4
-// (operation mode) and unk_16FEA4 (decoding angle). Per decoder layer
-// they advance by 8064, 2016 and 2016 bytes respectively.
 constexpr std::array<ParmaBlindLayerConfig, 3> kRow17Layers = {{
     {{
         passthrough(0U),
@@ -170,7 +166,7 @@ ParmaBlindLayerConfig make_layer(
 }
 
 ParmaBlindLayerConfig height_layer() noexcept {
-    // DTS_ParmaDec_SetBlind rows 9..17, layer 1 for 0x360DF.
+    // Height-layer routing for rows 9 through 17.
     return make_layer({
         {0U, direct_rule(0U)}, {1U, direct_rule(1U)},
         {2U, direct_rule(2U)}, {3U, direct_rule(3U)},
@@ -197,10 +193,6 @@ ParmaBlindTopology make_height_topology(
 
 const std::array<ParmaBlindTopology, 8U>&
 height_topologies() noexcept {
-    // These records are the post-UpdateChannelInfo native topology dumped
-    // from visio-libdtsx.so after DTS_ParmaDec_SetBlind.  Every blind row in
-    // this decoder uses pairwise analysis; rows 10/11 additionally use the
-    // documented special intermediate modes 5/6/7.
     static const std::array<ParmaBlindTopology, 8U> rows = {{
         make_height_topology(0x6U, make_layer({
             {0U, special_rule(6U, 1U, 2U, 0.5F, 0.5F, 1.0F)},

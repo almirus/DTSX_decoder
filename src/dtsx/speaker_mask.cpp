@@ -1,5 +1,6 @@
 #include "dtsx/speaker_mask.hpp"
 
+#include <algorithm>
 #include <array>
 
 namespace dtsx {
@@ -42,7 +43,6 @@ struct SpeakerCoordinateEntry final {
     std::string_view name;
 };
 
-// libdtsx.so: sub_DAE54 standard destination coordinates.
 constexpr std::array<SpeakerCoordinateEntry, 20>
     kStandardSpeakerCoordinates = {{
         {0U, 0.0F, 0.0F, "FC"},
@@ -55,8 +55,6 @@ constexpr std::array<SpeakerCoordinateEntry, 20>
         {8U, 150.0F, 0.0F, "BR"},
         {9U, -90.0F, 0.0F, "LSS"},
         {10U, 90.0F, 0.0F, "RSS"},
-        // DTS physical speaker-mask values (libdtsx.so: sub_DA3BC):
-        // 0x0800/0x1000 are Lc/Rc, while 0x020000/0x040000 are Lw/Rw.
         {11U, -15.0F, 0.0F, "Lc"},
         {12U, 15.0F, 0.0F, "Rc"},
         {17U, -60.0F, 0.0F, "Lw"},
@@ -72,7 +70,6 @@ constexpr std::array<SpeakerCoordinateEntry, 20>
 } // namespace
 
 std::uint32_t speaker_count_from_activity_mask(std::uint32_t mask) noexcept {
-    // libdtsx.so: dtsGetNumSpeakersFrmSpeakerActMask, 0x2edc0.
     constexpr std::array<std::uint8_t, 20> kSpeakerCount = {
         1U, 2U, 2U, 1U, 1U, 2U, 2U, 1U, 1U, 2U,
         2U, 2U, 1U, 2U, 1U, 2U, 1U, 2U, 2U, 2U,
@@ -90,9 +87,6 @@ std::uint32_t speaker_count_from_activity_mask(std::uint32_t mask) noexcept {
 }
 
 bool has_height_channels(std::uint32_t mask) noexcept {
-    // libdtsx.so: DTSFrameScanner_HasHeightChannels, 0x31a70, tests
-    // physical speaker bits. Public callers pass a speaker-activity mask,
-    // so expand it before applying the native physical-height mask.
     for (const std::uint32_t speaker :
          expand_speaker_activity_mask(mask)) {
         if ((speaker & 0x01F8E000U) != 0U) {
@@ -104,8 +98,6 @@ bool has_height_channels(std::uint32_t mask) noexcept {
 
 std::vector<std::uint32_t> expand_speaker_activity_mask(
     std::uint32_t mask) {
-    // libdtsx.so: sub_5F810/sub_5FE60, speaker activity expansion
-    // through DTSX_SPKRACTNUMCH_TABLE and unk_1518B4.
     std::vector<std::uint32_t> result;
     result.reserve(speaker_count_from_activity_mask(mask));
     for (std::size_t activity = 0U;
@@ -125,11 +117,18 @@ std::vector<std::uint32_t> expand_speaker_activity_mask(
     return result;
 }
 
+std::vector<std::uint32_t> expand_speaker_activity_mask_without_lfe(
+    std::uint32_t mask) {
+    std::vector<std::uint32_t> result = expand_speaker_activity_mask(mask);
+    result.erase(
+        std::remove(
+            result.begin(), result.end(), kPhysicalLfeSpeakerMask),
+        result.end());
+    return result;
+}
+
 std::uint32_t speaker_mask_to_activity_mask(
     std::uint32_t mask) noexcept {
-    // libdtsx.so: dtsxConvertSpkrMaskToSpkrActMask, 0x9e944.
-    // A speaker-activity pair is present when either physical channel
-    // belonging to the pair is present.
     std::uint32_t result = 0U;
     for (std::size_t activity = 0U;
          activity < kSpeakerActivityChannels.size();

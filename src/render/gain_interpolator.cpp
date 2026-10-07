@@ -31,8 +31,6 @@ bool apply_native_gain_ramp(
     std::uint8_t pcm_fractional_bits,
     GainApplyMode mode,
     bool snap_gain_to_zero_db) noexcept {
-    // libdtsx.so: dts_3d_complex_channel_renderer_t_render_apply,
-    // 0xe7138..0xe739c.
     if (input == nullptr || output == nullptr
         || ramp.fractional_bits >= 31U
         || pcm_fractional_bits == 0U
@@ -59,7 +57,7 @@ bool apply_native_gain_ramp(
     const std::int64_t interpolation_base =
         static_cast<std::int64_t>(destination_gain) * base_gain;
     const std::int64_t rounding =
-        static_cast<std::int64_t>(1U << (pcm_fractional_bits - 1U));
+        std::int64_t{1} << (pcm_fractional_bits - 1U);
     std::int32_t last_gain = current;
     std::int32_t previous_gain = static_cast<std::int32_t>(sample_count);
     for (std::size_t index = 0; index < sample_count; ++index) {

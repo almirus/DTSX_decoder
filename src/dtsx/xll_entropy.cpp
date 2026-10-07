@@ -31,7 +31,6 @@ bool unpack_xll_msb_binary(
     std::uint32_t sample_count,
     std::uint8_t bit_width,
     std::vector<std::int32_t>& values) {
-    // libdtsx.so: dtsXLLUnpackMSBBinary, 0x10ee90.
     values.clear();
     values.reserve(sample_count);
     if (bit_width > 32U) {
@@ -53,7 +52,6 @@ bool unpack_xll_msb_rice(
     const std::vector<std::uint8_t>& escape_flags,
     std::uint8_t escape_width,
     std::vector<std::int32_t>& values) {
-    // libdtsx.so: dtsXLLUnpackMSBRiceIso, 0x10ef14.
     values.clear();
     values.reserve(escape_flags.size());
     if (escape_width > 32U) {
@@ -83,7 +81,6 @@ bool unpack_xll_msb_rice_binary(
     std::uint8_t rice_bits,
     std::uint8_t escape_width,
     std::vector<std::int32_t>& values) {
-    // libdtsx.so: dtsXLLUnpackMSBRiceBinaryIso, 0x10f010.
     values.clear();
     values.reserve(escape_flags.size());
     if (rice_bits >= 32U || escape_width > 32U) {
@@ -117,7 +114,6 @@ bool unpack_xll_lsb_core(
     std::uint32_t sample_count,
     std::uint8_t bit_width,
     std::vector<std::uint32_t>& values) {
-    // libdtsx.so: dtsXLLUnpackLSBCore, 0x10f188.
     values.clear();
     values.reserve(sample_count);
     if (bit_width > 32U) {
@@ -137,7 +133,6 @@ bool unpack_xll_msb(
     std::uint32_t sample_count,
     const XllMsbCoding& coding,
     std::vector<std::int32_t>& values) {
-    // libdtsx.so: dtsxXLLUnpackMSB, 0xb9f90.
     if (coding.initial_sample_count > sample_count) {
         return false;
     }
@@ -231,7 +226,6 @@ bool combine_xll_msb_lsb(
     std::uint8_t msb_shift,
     std::uint8_t lsb_shift,
     std::vector<std::int32_t>& samples) {
-    // libdtsx.so: dtsXLLCombineMSBLSBPartsCore, 0x10ee10.
     if (msb.size() != lsb.size()
         || msb_shift >= 32U
         || lsb_shift >= 32U) {
@@ -254,7 +248,6 @@ bool unpack_xll_decimator_history(
     std::uint8_t channel_count,
     std::uint8_t first_channel,
     XllDecimatorHistory& history) {
-    // libdtsx.so: dtsxXLLUnpackDecimatorHistory, 0xba6e0.
     history = {};
     if (first_channel > channel_count) {
         return false;

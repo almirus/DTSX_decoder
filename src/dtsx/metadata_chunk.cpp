@@ -12,9 +12,6 @@ bool unpack_metadata_chunk_payload(
     const std::vector<std::uint8_t>& element_sizes,
     MetadataChunkEnvelope& envelope,
     std::uint8_t association_mode) {
-    // libdtsx.so: sub_C5B9C, 0xc5b9c.  DTS:X XLL assets carry the
-    // element-size vector in the asset descriptor, so the in-band chunk
-    // starts directly with element headers and ends with its CRC16.
     envelope = {};
     envelope.element_sizes = element_sizes;
     for (const std::uint8_t size : element_sizes) {
@@ -42,11 +39,6 @@ bool unpack_metadata_chunk_payload(
     envelope.crc_valid =
         validate_region(envelope.crc_region_size);
     if (!envelope.crc_valid) {
-        // libdtsx.so receives these byte counts from the private XLL
-        // navigation arrays.  Some descriptors continue beyond their
-        // nominal header and an unavailable look-ahead word can corrupt the
-        // final count while the in-band CRC remains authoritative.  Recover
-        // only that final count, keeping every preceding element boundary.
         const std::uint32_t prefix_payload_size =
             envelope.element_payload_size
             - envelope.element_sizes.back();
@@ -104,7 +96,6 @@ bool unpack_metadata_chunk_payload(
 bool unpack_metadata_chunk_envelope(bitstream::Cursor& source,
                                     MetadataChunkEnvelope& envelope,
                                     std::uint8_t association_mode) {
-    // libdtsx.so: dtsCheckValidMetaDataChunk, 0x2f0cc..0x2f138.
     if (source.remaining_bits() < 40U
         || source.extract_unsigned(32U) != kMetadataChunkSync) {
         return false;
@@ -158,17 +149,17 @@ bool unpack_metadata_chunk_envelope(bitstream::Cursor& source,
     }
     envelope.crc_valid = valid_crc16(
         source, 8U * envelope.crc_region_size);
-    // libdtsx.so stores the CRC result in the chunk state but does not reject
-    // an otherwise structurally valid chunk here (dtsCheckValidMetaDataChunk,
-    // 0x2f05c..0x2f138).  The caller may still expose crc_valid diagnostically.
     return source.valid() && element_source.valid();
 }
 
 std::vector<MetadataChunkLocation> scan_metadata_chunks(
     bitstream::Cursor source,
     std::uint32_t frame_bytes,
-    std::uint8_t association_mode) {
-    // libdtsx.so: dtsCheckValidMetaDataChunk, 0x2f05c..0x2f138.
+    std::uint8_t association_mode,
+    std::uint32_t step_bytes) {
+    if (step_bytes == 0U) {
+        step_bytes = 4U;
+    }
     std::vector<MetadataChunkLocation> chunks;
     std::uint32_t byte_offset = 0;
     while (byte_offset + 4U <= frame_bytes
@@ -179,15 +170,29 @@ std::vector<MetadataChunkLocation> scan_metadata_chunks(
             MetadataChunkEnvelope envelope;
             if (unpack_metadata_chunk_envelope(
                     candidate, envelope, association_mode)) {
+                const std::uint32_t prefix_bytes =
+                    5U + static_cast<std::uint32_t>(
+                        envelope.element_sizes.size());
                 chunks.push_back(MetadataChunkLocation{
                     byte_offset,
-                    5U + static_cast<std::uint32_t>(
-                        envelope.element_sizes.size()),
+                    prefix_bytes,
                     std::move(envelope)});
+                if (step_bytes == 1U) {
+                    const std::uint32_t skip = prefix_bytes
+                        + chunks.back().envelope.crc_region_size;
+                    if (skip == 0U
+                        || 8U * skip > source.remaining_bits()) {
+                        break;
+                    }
+                    source.fast_forward(static_cast<std::int32_t>(
+                        8U * skip));
+                    byte_offset += skip;
+                    continue;
+                }
             }
         }
-        source.fast_forward(32);
-        byte_offset += 4U;
+        source.fast_forward(static_cast<std::int32_t>(8U * step_bytes));
+        byte_offset += step_bytes;
     }
     return chunks;
 }
@@ -197,7 +202,6 @@ const MetadataElementHeader* find_metadata_element_for_asset(
     std::uint8_t chunk_id,
     std::uint8_t asset_index,
     bool primary) noexcept {
-    // libdtsx.so: dtsFindMDChunkOfAsset, 0xa0460.
     for (const MetadataElementHeader& element : envelope.elements) {
         if (element.chunk_id != chunk_id) {
             continue;

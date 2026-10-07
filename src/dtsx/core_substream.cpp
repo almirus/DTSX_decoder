@@ -4,7 +4,6 @@ namespace dtsx {
 
 bool parse_core_substream_header(bitstream::Cursor& source,
                                  CoreSubstreamInfo& info) noexcept {
-    // libdtsx.so: DTSFrameScanner_ParseCoreSS, 0x31160..0x312c0.
     info = {};
     source.fast_forward(0x26);
     const std::uint32_t broadcast = source.extract_unsigned(1U);
@@ -83,7 +82,7 @@ bool parse_core_substream_header(bitstream::Cursor& source,
     if (broadcast != 0U) {
         // DTSFrameScanner_ParseCoreSS advances over the broadcast-specific
         // 16-bit field after the channel-table descriptors and before the
-        // subframe count (0x31160, v100 branch).
+        // subframe count.
         source.fast_forward(16);
     }
     info.representation_type = static_cast<std::uint8_t>(
