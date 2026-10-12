@@ -52,3 +52,22 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
 }
+
+#ifndef _WIN32
+#include <clocale>
+#include <cstdlib>
+#include <vector>
+int main(int argc, char** argv) {
+    std::setlocale(LC_ALL, "C.UTF-8");
+    std::vector<std::wstring> storage;
+    std::vector<wchar_t*> wargv;
+    for (int i = 0; i < argc; ++i) {
+        std::wstring w(std::mbstowcs(nullptr, argv[i], 0), L'\0');
+        std::mbstowcs(w.data(), argv[i], w.size());
+        storage.push_back(w);
+    }
+    for (auto& w : storage) wargv.push_back(w.data());
+    wargv.push_back(nullptr);
+    return wmain(argc, wargv.data());
+}
+#endif

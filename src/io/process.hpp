@@ -33,6 +33,9 @@ private:
     HANDLE process_ = nullptr;
     HANDLE thread_ = nullptr;
     HANDLE stdout_read_ = nullptr;
+#else
+    int pid_ = -1;
+    int fd_ = -1;
 #endif
     bool waited_ = false;
     unsigned exit_code_ = 0;
