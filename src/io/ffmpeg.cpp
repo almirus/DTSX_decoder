@@ -7,10 +7,16 @@
 #include <string_view>
 #include <vector>
 
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#else
+#include <cstdlib>
+#include <sstream>
+#include <unistd.h>
+#endif
 
 namespace dtsx_decode {
 namespace {
@@ -66,6 +72,7 @@ std::uint64_t parse_duration_milliseconds(std::string_view output) {
         * 1000.0));
 }
 
+#ifdef _WIN32
 std::filesystem::path find_ffmpeg_in_path() {
     const DWORD path_length =
         GetEnvironmentVariableW(L"PATH", nullptr, 0U);
@@ -107,6 +114,19 @@ std::filesystem::path find_ffmpeg_in_path() {
     return std::filesystem::path(
         std::wstring(executable.data(), copied));
 }
+
+#else
+std::filesystem::path find_ffmpeg_in_path() {
+    const char* path = std::getenv("PATH");
+    std::stringstream dirs(path ? path : "");
+    std::string dir;
+    while (std::getline(dirs, dir, ':')) {
+        const std::filesystem::path p = std::filesystem::path(dir) / "ffmpeg";
+        if (access(p.c_str(), X_OK) == 0) return p;
+    }
+    throw std::runtime_error("ffmpeg was not found in PATH");
+}
+#endif
 
 } // namespace
 

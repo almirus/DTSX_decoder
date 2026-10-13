@@ -48,10 +48,14 @@ are outside the currently supported CLI scope.
 
 ## Requirements
 
-- Windows x64;
-- Microsoft Visual C++ toolchain with C++17 support;
+- Windows x64 with the Microsoft Visual C++ toolchain (C++17), or Linux
+  (other POSIX systems should work) with a C++17 compiler (GCC or Clang);
 - FFmpeg and FFprobe available through `PATH`, or supplied explicitly through
   command-line options.
+
+On Linux, DTS-UHD (P2) decoding is not available: it relies on the
+embedded Windows `DTSXDecoder.dll`. DTS Core, DTS-HD and legacy DTS:X
+(ExSS/XLL object audio) decode the same as on Windows.
 
 ## Build
 
@@ -61,6 +65,15 @@ are outside the currently supported CLI scope.
 
 The resulting executable is written to `bin\Release\dtsx-decode.exe` by
 default.
+
+On Linux:
+
+```sh
+./build.sh
+```
+
+The executable is written to `bin/Release/dtsx-decode`. `CC`, `CXX` and `JOBS`
+can be set to choose the compilers and the number of parallel jobs.
 
 ## Quick Start
 

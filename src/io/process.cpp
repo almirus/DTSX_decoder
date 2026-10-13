@@ -5,6 +5,14 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <cerrno>
+#ifndef _WIN32
+#include <codecvt>
+#include <locale>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 
 namespace dtsx_decode {
 namespace {
@@ -112,8 +120,27 @@ ProcessReader::ProcessReader(const std::filesystem::path& executable,
     (void)executable;
     (void)arguments;
     (void)verbose;
-    (void)merge_stderr;
-    throw std::runtime_error("ProcessReader is currently implemented for Windows only");
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+    std::vector<std::string> args{executable.string()};
+    for (const auto& a : arguments) args.push_back(conv.to_bytes(a));
+    int fds[2];
+    if (pipe(fds) != 0) throw std::runtime_error("pipe failed");
+    const pid_t pid = fork();
+    if (pid < 0) throw std::runtime_error("fork failed");
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        if (merge_stderr) dup2(fds[1], 2);
+        else if (!verbose) { int n = open("/dev/null", O_WRONLY); if (n >= 0) dup2(n, 2); }
+        close(fds[0]); close(fds[1]);
+        std::vector<char*> argv;
+        for (auto& a : args) argv.push_back(a.data());
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+    close(fds[1]);
+    pid_ = pid;
+    fd_ = fds[0];
 #endif
 }
 
@@ -128,6 +155,9 @@ ProcessReader::~ProcessReader() {
     if (process_) {
         CloseHandle(process_);
     }
+#else
+    if (fd_ >= 0) close(fd_);
+    if (pid_ > 0 && !waited_) waitpid(pid_, nullptr, 0);
 #endif
 }
 
@@ -148,9 +178,12 @@ std::size_t ProcessReader::read(void* destination, std::size_t capacity) {
     }
     return static_cast<std::size_t>(received);
 #else
-    (void)destination;
-    (void)capacity;
-    return 0;
+    if (fd_ < 0 || capacity == 0) return 0;
+    for (;;) {
+        const ssize_t n = ::read(fd_, destination, capacity);
+        if (n >= 0) return static_cast<std::size_t>(n);
+        if (errno != EINTR) throw std::runtime_error("read from child process failed");
+    }
 #endif
 }
 
@@ -167,6 +200,11 @@ unsigned ProcessReader::wait() {
         throw std::runtime_error("GetExitCodeProcess failed");
     }
     exit_code_ = static_cast<unsigned>(code);
+#else
+    if (fd_ >= 0) { close(fd_); fd_ = -1; }
+    int status = 0;
+    if (pid_ > 0 && waitpid(pid_, &status, 0) == pid_)
+        exit_code_ = WIFEXITED(status) ? WEXITSTATUS(status) : 1u;
 #endif
     waited_ = true;
     return exit_code_;
