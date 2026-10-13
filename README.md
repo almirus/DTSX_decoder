@@ -164,9 +164,9 @@ film_7.1.wav
 | `--objects-output-bed` | Только с `--objects-output-dir`: добавить `bed.wav` и `bed.json` — многоканальный bed без объектов для будущего object-viewer. |
 | `--imax-dsp` | Только для потока с IMAX Type1 Certified Content применить восстановленный AVRx0-профиль: 70 Гц, относительный LFE trim +10 дБ и bass collection из каналов Small. |
 | `--imax-small LIST` | Конфигурация физических колонок для `--imax-dsp`: `all` (по умолчанию), `none` или имена через запятую, например `FC,SL,SR`. Small-канал проходит HP4 70 Гц, а его LP4-бас суммируется в LFE; Large остаётся полнополосным. |
-| `--p2-decoder MODE` | P2 backend: `dll` (по умолчанию) или `internal` для диагностического ACE PCM. Внутренний backend использует DLL fallback, пока не покрыты все каналы кадра. |
-| `--ffmpeg PATH` | Явный путь к `ffmpeg.exe`. По умолчанию используется `ffmpeg` из `PATH`. |
-| `--ffprobe PATH` | Явный путь к `ffprobe.exe`. По умолчанию используется `ffprobe` из `PATH`. |
+| `--p2-decoder MODE` | Только Windows. P2 backend: `dll` (по умолчанию) или `internal` для диагностического ACE PCM. Внутренний backend использует DLL fallback, пока не покрыты все каналы кадра. |
+| `--ffmpeg PATH` | Явный путь к `ffmpeg` (`ffmpeg.exe` на Windows). По умолчанию используется `ffmpeg` из `PATH`. |
+| `--ffprobe PATH` | Явный путь к `ffprobe` (`ffprobe.exe` на Windows). По умолчанию используется `ffprobe` из `PATH`. |
 | `--overwrite` | Разрешить замену существующего выходного файла. Без флага существующий файл сохраняется. |
 | `--verbose` | Показать probe-информацию, channel order и запускаемые дочерние процессы. |
 | `--help` | Показать справку и успешно завершить работу. |
@@ -192,22 +192,6 @@ Object renderer воспроизводит стандартные destination la
 DTS-UHD/ACE/P2 оставлен отдельным низкоприоритетным этапом; текущий object path
 предназначен для legacy DTS:X на базе ExSS/XLL.
 
-## Координатный sidecar объекта
-
-Каждая строка с `coordinateStatus: "decoded"` описывает интервал
-`ptsSamples .. ptsSamples + durationSamples`. Помимо сферических координат она
-содержит:
-
-- `metadataMode` - режим объектных metadata;
-- `renderable` - допускает ли native renderer этот point source в данном
-  режиме;
-- `audioActive` - есть ли ненулевой PCM sample в waveform за этот интервал;
-- `peakSample` - максимальный абсолютный PCM24 sample за интервал.
-
-`audioActive` является вычисленным состоянием waveform, а не отдельным флагом
-битстрима. `metadata_present` для определения активности не используется:
-он сообщает о наличии обновления metadata, а не о звучании объекта.
-
 ## Выходной WAV
 
 Файл содержит PCM24 little-endian и `WAVE_FORMAT_EXTENSIBLE` с channel mask.
@@ -216,11 +200,31 @@ DTS-UHD/ACE/P2 оставлен отдельным низкоприоритет�
 
 ## Сборка и lint
 
-Сборка подготовлена в стиле `tools/auro3d-decode`:
+Поддерживаются Windows x64 с Microsoft Visual C++ и Linux с GCC или Clang.
+Для сборки нужен компилятор с поддержкой C++17; для работы — `ffmpeg` и
+`ffprobe` в `PATH` либо явные пути через параметры командной строки.
+
+На Windows:
 
 ```powershell
 .\build.bat
 ```
+
+Исполняемый файл: `bin\Release\dtsx-decode.exe`.
+
+На Linux:
+
+```sh
+./build.sh
+./bin/Release/dtsx-decode --input film.mkv --layout 7.1.4 --output film_7.1.4.wav
+```
+
+Исполняемый файл: `bin/Release/dtsx-decode`. Переменные окружения `CC`, `CXX`
+и `JOBS` задают C/C++-компиляторы и количество параллельных задач сборки.
+
+Linux поддерживает DTS Core, DTS-HD и legacy DTS:X с объектным аудио ExSS/XLL.
+Декодирование DTS-UHD/P2 на Linux недоступно: этот путь зависит от встроенной
+Windows-библиотеки `DTSXDecoder.dll`.
 
 Проверка форматирования и состава исходников:
 
