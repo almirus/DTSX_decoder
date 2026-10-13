@@ -1,0 +1,95 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 (MSVC)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release
+        shell: cmd
+        run: call build.bat
+
+      - name: Check CLI
+        shell: pwsh
+        run: |
+          & .\bin\Release\dtsx-decode.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Version check failed' }
+          & .\bin\Release\dtsx-decode.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Help check failed' }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item bin/Release/dtsx-decode.exe, README.md, LICENSE package/
+          Copy-Item third_party/dcadec/COPYING.LGPLv2.1 package/
+          Get-Content third_party/qrcodegen/qrcodegen.hpp -TotalCount 22 | Set-Content package/LICENSE.qrcodegen.txt
+          Compress-Archive -Path package/* -DestinationPath dtsx-decode-windows-x64.zip
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtsx-decode-windows-x64
+          path: dtsx-decode-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Linux x64 (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release
+        run: ./build.sh
+
+      - name: Check CLI
+        run: |
+          ./bin/Release/dtsx-decode --version
+          ./bin/Release/dtsx-decode --help
+
+      - name: Package
+        run: |
+          mkdir package
+          cp bin/Release/dtsx-decode README.md LICENSE third_party/dcadec/COPYING.LGPLv2.1 package/
+          head -n 22 third_party/qrcodegen/qrcodegen.hpp > package/LICENSE.qrcodegen.txt
+          tar -czf dtsx-decode-linux-x64-${{ matrix.compiler }}.tar.gz -C package .
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtsx-decode-linux-x64-${{ matrix.compiler }}
+          path: dtsx-decode-linux-x64-${{ matrix.compiler }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30

@@ -4,6 +4,7 @@
 > multichannel PCM workflows.**
 
 [![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
+[![Build](https://github.com/almirus/DTSX_decoder/actions/workflows/build.yml/badge.svg)](https://github.com/almirus/DTSX_decoder/actions/workflows/build.yml)
 
 **DTSX** is a technical project focused on decoding DTS Core, DTS-HD, legacy
 DTS:X ExSS/XLL object audio, and experimental DTS-UHD/ACE/P2 streams. It
@@ -74,6 +75,15 @@ On Linux:
 
 The executable is written to `bin/Release/dtsx-decode`. `CC`, `CXX` and `JOBS`
 can be set to choose the compilers and the number of parallel jobs.
+
+### GitHub Actions
+
+Every push and pull request builds Windows x64 with MSVC (`windows-2022`)
+and Linux x64 with GCC and Clang (`ubuntu-24.04`). Builds can also be started
+manually with **Run workflow** on the [Build workflow page](https://github.com/almirus/DTSX_decoder/actions/workflows/build.yml).
+Each job checks `--version` and `--help`, then uploads a release archive with
+the executable, README and license files. Artifacts are retained for 30 days.
+FFmpeg and FFprobe must be installed separately to decode audio.
 
 ## Quick Start
 
@@ -221,6 +231,13 @@ DTS-UHD/ACE/P2 оставлен отдельным низкоприоритет�
 
 Исполняемый файл: `bin/Release/dtsx-decode`. Переменные окружения `CC`, `CXX`
 и `JOBS` задают C/C++-компиляторы и количество параллельных задач сборки.
+
+GitHub Actions автоматически собирает Windows x64 (MSVC) и Linux x64 (GCC и
+Clang) при каждом push и pull request. Ручной запуск доступен через **Run
+workflow** на [странице Build](https://github.com/almirus/DTSX_decoder/actions/workflows/build.yml).
+В каждом задании проверяются `--version` и `--help`; архив с исполняемым файлом,
+README и лицензиями доступен в Artifacts в течение 30 дней. FFmpeg и FFprobe
+устанавливаются отдельно.
 
 Linux поддерживает DTS Core, DTS-HD и legacy DTS:X с объектным аудио ExSS/XLL.
 Декодирование DTS-UHD/P2 на Linux недоступно: этот путь зависит от встроенной
