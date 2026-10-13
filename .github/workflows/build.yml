@@ -2,6 +2,8 @@ name: Build
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -21,6 +23,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set version from tag
+        run: python .github/scripts/set-version.py
+
       - name: Build release
         shell: cmd
         run: call build.bat
@@ -28,8 +33,12 @@ jobs:
       - name: Check CLI
         shell: pwsh
         run: |
-          & .\bin\Release\dtsx-decode.exe --version
+          $versionOutput = & .\bin\Release\dtsx-decode.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Version check failed' }
+          $versionOutput
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $versionOutput[0] -cne "dtsx-decode $($env:GITHUB_REF_NAME.Substring(1))") {
+            throw 'Compiled version does not match the release tag'
+          }
           & .\bin\Release\dtsx-decode.exe --help
           if ($LASTEXITCODE -ne 0) { throw 'Help check failed' }
 
@@ -71,12 +80,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set version from tag
+        run: python3 .github/scripts/set-version.py
+
       - name: Build release
         run: ./build.sh
 
       - name: Check CLI
         run: |
-          ./bin/Release/dtsx-decode --version
+          version_output=$(./bin/Release/dtsx-decode --version)
+          printf '%s\n' "$version_output"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            test "$(printf '%s\n' "$version_output" | head -n 1)" = "dtsx-decode ${GITHUB_REF_NAME#v}"
+          fi
           ./bin/Release/dtsx-decode --help
 
       - name: Package
@@ -93,3 +109,36 @@ jobs:
           path: dtsx-decode-linux-x64-${{ matrix.compiler }}.tar.gz
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dtsx-decode-*
+          merge-multiple: true
+          path: release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          args=(--verify-tag --title "DTSX ${RELEASE_TAG#v}" --generate-notes)
+          version=${RELEASE_TAG#v}
+          if [[ "${version%%+*}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* "${args[@]}"
+          fi

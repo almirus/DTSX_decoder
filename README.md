@@ -85,6 +85,19 @@ Each job checks `--version` and `--help`, then uploads a release archive with
 the executable, README and license files. Artifacts are retained for 30 days.
 FFmpeg and FFprobe must be installed separately to decode audio.
 
+Push a SemVer tag such as `v1.2.3` or `v1.2.3-beta.1` to publish a
+[GitHub Release](https://github.com/almirus/DTSX_decoder/releases) automatically
+after all three builds pass. The tag sets `kVersion` in `app_version.hpp` during
+the build (without the leading `v`), including CLI and WAV metadata. The source
+file change is not committed back. Branch and local builds use the checked-in
+version. Tags with a prerelease suffix create a prerelease. Release archives
+remain available independently of the 30-day Actions artifact retention.
+
+```sh
+git tag -a v1.2.3 -m "DTSX 1.2.3"
+git push origin v1.2.3
+```
+
 ## Quick Start
 
 ```text
@@ -238,6 +251,14 @@ workflow** на [странице Build](https://github.com/almirus/DTSX_decoder
 В каждом задании проверяются `--version` и `--help`; архив с исполняемым файлом,
 README и лицензиями доступен в Artifacts в течение 30 дней. FFmpeg и FFprobe
 устанавливаются отдельно.
+
+При отправке SemVer-тега, например `v1.2.3` или `v1.2.3-beta.1`, после успешной
+сборки всех трёх вариантов автоматически публикуется GitHub Release с архивами.
+Версия в `app_version.hpp`, CLI и WAV-метаданных берётся из тега без префикса `v`.
+Изменение заголовка выполняется только при сборке и не коммитится обратно;
+сборки веток и локальные сборки используют сохранённую в исходниках версию.
+Теги с prerelease-суффиксом публикуются как предварительные версии. Архивы
+Releases сохраняются независимо от срока хранения Artifacts.
 
 Linux поддерживает DTS Core, DTS-HD и legacy DTS:X с объектным аудио ExSS/XLL.
 Декодирование DTS-UHD/P2 на Linux недоступно: этот путь зависит от встроенной
